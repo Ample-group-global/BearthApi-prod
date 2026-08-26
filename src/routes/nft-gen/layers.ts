@@ -6,6 +6,27 @@ import * as svc from "../../services/nft-gen.service";
 import { getS3Client } from "../../clients/s3";
 import { deleteObjectsChunked } from "../../utils/deleteObjects";
 
+// Deletes only the stale objects left over from a previous import of this
+// same layer — i.e. keys under `${layer}/` that aren't in the set we just
+// uploaded. Scoped to one layer and run only after its new files are
+// confirmed uploaded, so a failed/partial upload never empties anything.
+async function cleanupStaleLayerFiles(bucket: string, layer: string, keptKeys: Set<string>): Promise<void> {
+  const s3 = getS3Client();
+  const prefix = `${layer}/`;
+  let continuationToken: string | undefined;
+  const stale: string[] = [];
+  do {
+    const list = await s3.send(new ListObjectsV2Command({
+      Bucket: bucket, Prefix: prefix, MaxKeys: 1000, ContinuationToken: continuationToken,
+    }));
+    for (const obj of list.Contents ?? []) {
+      if (obj.Key && !keptKeys.has(obj.Key)) stale.push(obj.Key);
+    }
+    continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
+  } while (continuationToken);
+  if (stale.length) await deleteObjectsChunked(s3, bucket, stale);
+}
+
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 router.post("/clear-bucket", async (req, res, next) => {
@@ -63,6 +84,14 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
           s3Failures.push(rel);
         }
       }));
+    }
+
+    // Only remove this layer's stale leftovers once every new file for it
+    // has actually landed — a partial/failed upload must never trigger a
+    // cleanup, or it could delete files nothing has replaced yet.
+    if (s3Uploaded.length && s3Failures.length === 0) {
+      const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
+      await cleanupStaleLayerFiles(bucket, safe, new Set(s3Uploaded)).catch(() => {});
     }
 
     res.json({ ok: true, added, s3Uploaded, s3Failures });
