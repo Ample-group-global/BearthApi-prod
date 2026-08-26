@@ -1,0 +1,56 @@
+{
+  "abi": [
+    {
+      "type": "constructor",
+      "inputs": [
+        { "name": "bearthNFT_",   "type": "address" },
+        { "name": "upgradeNFT_",  "type": "address" },
+        { "name": "adminWallet",  "type": "address" }
+      ]
+    },
+    {
+      "type": "function", "name": "burnAndUpgrade",
+      "inputs": [{ "name": "tokenIds", "type": "uint256[3]" }],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function", "name": "setUpgradeEnabled",
+      "inputs": [{ "name": "enabled", "type": "bool" }],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function", "name": "pause",   "inputs": [], "outputs": [], "stateMutability": "nonpayable" },
+    { "type": "function", "name": "unpause", "inputs": [], "outputs": [], "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function", "name": "upgradeEnabled",
+      "inputs": [],
+      "outputs": [{ "name": "", "type": "bool" }],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function", "name": "paused",
+      "inputs": [],
+      "outputs": [{ "name": "", "type": "bool" }],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function", "name": "BURN_RATIO",
+      "inputs": [],
+      "outputs": [{ "name": "", "type": "uint8" }],
+      "stateMutability": "view"
+    },
+    {
+      "type": "event", "name": "Upgraded",
+      "inputs": [
+        { "name": "holder",       "type": "address",   "indexed": true  },
+        { "name": "burnedIds",    "type": "uint256[3]","indexed": false },
+        { "name": "burnedRarity", "type": "uint8",     "indexed": false },
+        { "name": "newTokenId",   "type": "uint256",   "indexed": false },
+        { "name": "newRarity",    "type": "uint8",     "indexed": false }
+      ]
+    }
+  ]
+}

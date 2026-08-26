@@ -1,0 +1,1484 @@
+[
+    {
+        "inputs":  [
+
+                   ],
+        "stateMutability":  "nonpayable",
+        "type":  "constructor"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AccessControlBadConfirmation",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "neededRole",
+                           "type":  "bytes32"
+                       }
+                   ],
+        "name":  "AccessControlUnauthorizedAccount",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "target",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "AddressEmptyCode",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AlreadyListed",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AuctionAlreadyEnded",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AuctionDisabled",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AuctionNotEnded",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AuctionNotOpen",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "AuctionStillOpen",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "BidTooLarge",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "BidTooLow",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "implementation",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "ERC1967InvalidImplementation",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "ERC1967NonPayable",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "EnforcedPause",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "ExpectedPause",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "FailedCall",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "InvalidBatchSize",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "InvalidInitialization",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "InvalidTime",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "NoFunds",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "NotInitializing",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "NotStarted",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "ReentrancyGuardReentrantCall",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "TokenNotDeposited",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "UUPSUnauthorizedCallContext",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "slot",
+                           "type":  "bytes32"
+                       }
+                   ],
+        "name":  "UUPSUnsupportedProxiableUUID",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "UpgradeImplMismatch",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "UpgradeTimelockActive",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "WalletBlocked",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "WithdrawFailed",
+        "type":  "error"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "ZeroAddress",
+        "type":  "error"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "wallet",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "bool",
+                           "name":  "blocked",
+                           "type":  "bool"
+                       }
+                   ],
+        "name":  "AccountBlocked",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "AuctionCancelled",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "collection",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "uint256",
+                           "name":  "tokenId",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "startTime",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "endTime",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "string",
+                           "name":  "title",
+                           "type":  "string"
+                       }
+                   ],
+        "name":  "AuctionCreated",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "winner",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "amount",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "tokenId",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "AuctionSettled",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  false,
+                           "internalType":  "bool",
+                           "name":  "enabled",
+                           "type":  "bool"
+                       }
+                   ],
+        "name":  "AuctionToggled",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "bidder",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "amount",
+                           "type":  "uint256"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "newEndTime",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "BidPlaced",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint64",
+                           "name":  "version",
+                           "type":  "uint64"
+                       }
+                   ],
+        "name":  "Initialized",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  false,
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "Paused",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "bytes32",
+                           "name":  "previousAdminRole",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "bytes32",
+                           "name":  "newAdminRole",
+                           "type":  "bytes32"
+                       }
+                   ],
+        "name":  "RoleAdminChanged",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "sender",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "RoleGranted",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "sender",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "RoleRevoked",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "treasury",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "TreasuryUpdated",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  false,
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "Unpaused",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "impl",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "UpgradeCancelled",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "impl",
+                           "type":  "address"
+                       },
+                       {
+                           "indexed":  false,
+                           "internalType":  "uint256",
+                           "name":  "executeAfter",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "UpgradeScheduled",
+        "type":  "event"
+    },
+    {
+        "anonymous":  false,
+        "inputs":  [
+                       {
+                           "indexed":  true,
+                           "internalType":  "address",
+                           "name":  "implementation",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "Upgraded",
+        "type":  "event"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "DEFAULT_ADMIN_ROLE",
+        "outputs":  [
+                        {
+                            "internalType":  "bytes32",
+                            "name":  "",
+                            "type":  "bytes32"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "EXTENSION_WINDOW",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "MAX_BATCH_SIZE",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "MAX_EXTENSIONS",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "MIN_BID_INCREMENT_BPS",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "OPERATOR_ROLE",
+        "outputs":  [
+                        {
+                            "internalType":  "bytes32",
+                            "name":  "",
+                            "type":  "bytes32"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "UPGRADE_DELAY",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "UPGRADE_INTERFACE_VERSION",
+        "outputs":  [
+                        {
+                            "internalType":  "string",
+                            "name":  "",
+                            "type":  "string"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "auctionCount",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "auctionEnabled",
+        "outputs":  [
+                        {
+                            "internalType":  "bool",
+                            "name":  "",
+                            "type":  "bool"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "auctions",
+        "outputs":  [
+                        {
+                            "internalType":  "address",
+                            "name":  "collection",
+                            "type":  "address"
+                        },
+                        {
+                            "internalType":  "address",
+                            "name":  "highBidder",
+                            "type":  "address"
+                        },
+                        {
+                            "internalType":  "uint96",
+                            "name":  "highBid",
+                            "type":  "uint96"
+                        },
+                        {
+                            "internalType":  "uint64",
+                            "name":  "endTime",
+                            "type":  "uint64"
+                        },
+                        {
+                            "internalType":  "uint64",
+                            "name":  "startTime",
+                            "type":  "uint64"
+                        },
+                        {
+                            "internalType":  "uint32",
+                            "name":  "extensionCount",
+                            "type":  "uint32"
+                        },
+                        {
+                            "internalType":  "uint256",
+                            "name":  "tokenId",
+                            "type":  "uint256"
+                        },
+                        {
+                            "internalType":  "uint96",
+                            "name":  "reservePrice",
+                            "type":  "uint96"
+                        },
+                        {
+                            "internalType":  "enum BearthAuction.AuctionStatus",
+                            "name":  "status",
+                            "type":  "uint8"
+                        },
+                        {
+                            "internalType":  "string",
+                            "name":  "title",
+                            "type":  "string"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "wallet",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "bool",
+                           "name":  "blocked",
+                           "type":  "bool"
+                       }
+                   ],
+        "name":  "blockAccount",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "blockedAccounts",
+        "outputs":  [
+                        {
+                            "internalType":  "bool",
+                            "name":  "",
+                            "type":  "bool"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "cancelAuction",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "cancelUpgrade",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "collection",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "uint256",
+                           "name":  "tokenId_",
+                           "type":  "uint256"
+                       },
+                       {
+                           "internalType":  "uint64",
+                           "name":  "startTime",
+                           "type":  "uint64"
+                       },
+                       {
+                           "internalType":  "uint64",
+                           "name":  "endTime",
+                           "type":  "uint64"
+                       },
+                       {
+                           "internalType":  "uint96",
+                           "name":  "reservePrice",
+                           "type":  "uint96"
+                       },
+                       {
+                           "internalType":  "string",
+                           "name":  "title",
+                           "type":  "string"
+                       }
+                   ],
+        "name":  "createTokenAuction",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "id",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "collection",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "uint256[]",
+                           "name":  "tokenIds",
+                           "type":  "uint256[]"
+                       },
+                       {
+                           "internalType":  "uint64",
+                           "name":  "startTime",
+                           "type":  "uint64"
+                       },
+                       {
+                           "internalType":  "uint64",
+                           "name":  "endTime",
+                           "type":  "uint64"
+                       },
+                       {
+                           "internalType":  "uint96",
+                           "name":  "reservePrice",
+                           "type":  "uint96"
+                       },
+                       {
+                           "internalType":  "string",
+                           "name":  "title",
+                           "type":  "string"
+                       }
+                   ],
+        "name":  "createTokenAuctionBatch",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256[]",
+                            "name":  "ids",
+                            "type":  "uint256[]"
+                        }
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "collection",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "uint256",
+                           "name":  "tokenId",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "depositToken",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "collection",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "uint256[]",
+                           "name":  "tokenIds",
+                           "type":  "uint256[]"
+                       }
+                   ],
+        "name":  "depositTokenBatch",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "emergencySettleCancel",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "getAuction",
+        "outputs":  [
+                        {
+                            "components":  [
+                                               {
+                                                   "internalType":  "address",
+                                                   "name":  "collection",
+                                                   "type":  "address"
+                                               },
+                                               {
+                                                   "internalType":  "address",
+                                                   "name":  "highBidder",
+                                                   "type":  "address"
+                                               },
+                                               {
+                                                   "internalType":  "uint96",
+                                                   "name":  "highBid",
+                                                   "type":  "uint96"
+                                               },
+                                               {
+                                                   "internalType":  "uint64",
+                                                   "name":  "endTime",
+                                                   "type":  "uint64"
+                                               },
+                                               {
+                                                   "internalType":  "uint64",
+                                                   "name":  "startTime",
+                                                   "type":  "uint64"
+                                               },
+                                               {
+                                                   "internalType":  "uint32",
+                                                   "name":  "extensionCount",
+                                                   "type":  "uint32"
+                                               },
+                                               {
+                                                   "internalType":  "uint256",
+                                                   "name":  "tokenId",
+                                                   "type":  "uint256"
+                                               },
+                                               {
+                                                   "internalType":  "uint96",
+                                                   "name":  "reservePrice",
+                                                   "type":  "uint96"
+                                               },
+                                               {
+                                                   "internalType":  "enum BearthAuction.AuctionStatus",
+                                                   "name":  "status",
+                                                   "type":  "uint8"
+                                               },
+                                               {
+                                                   "internalType":  "string",
+                                                   "name":  "title",
+                                                   "type":  "string"
+                                               }
+                                           ],
+                            "internalType":  "struct BearthAuction.Auction",
+                            "name":  "",
+                            "type":  "tuple"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       }
+                   ],
+        "name":  "getRoleAdmin",
+        "outputs":  [
+                        {
+                            "internalType":  "bytes32",
+                            "name":  "",
+                            "type":  "bytes32"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "grantRole",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "hasRole",
+        "outputs":  [
+                        {
+                            "internalType":  "bool",
+                            "name":  "",
+                            "type":  "bool"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "treasury_",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "address",
+                           "name":  "adminWallet",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "initialize",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "uint256",
+                           "name":  "",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "isListed",
+        "outputs":  [
+                        {
+                            "internalType":  "bool",
+                            "name":  "",
+                            "type":  "bool"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "pause",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "paused",
+        "outputs":  [
+                        {
+                            "internalType":  "bool",
+                            "name":  "",
+                            "type":  "bool"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "pendingUpgradeImpl",
+        "outputs":  [
+                        {
+                            "internalType":  "address",
+                            "name":  "",
+                            "type":  "address"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "pendingWithdrawals",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "placeBid",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "payable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "proxiableUUID",
+        "outputs":  [
+                        {
+                            "internalType":  "bytes32",
+                            "name":  "",
+                            "type":  "bytes32"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "internalType":  "address",
+                           "name":  "callerConfirmation",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "renounceRole",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes32",
+                           "name":  "role",
+                           "type":  "bytes32"
+                       },
+                       {
+                           "internalType":  "address",
+                           "name":  "account",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "revokeRole",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "newImpl",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "scheduleUpgrade",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bool",
+                           "name":  "enabled",
+                           "type":  "bool"
+                       }
+                   ],
+        "name":  "setAuctionEnabled",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "treasury_",
+                           "type":  "address"
+                       }
+                   ],
+        "name":  "setTreasury",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "settle",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "bytes4",
+                           "name":  "id",
+                           "type":  "bytes4"
+                       }
+                   ],
+        "name":  "supportsInterface",
+        "outputs":  [
+                        {
+                            "internalType":  "bool",
+                            "name":  "",
+                            "type":  "bool"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "timeRemaining",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "treasury",
+        "outputs":  [
+                        {
+                            "internalType":  "address",
+                            "name":  "",
+                            "type":  "address"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "unpause",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "upgradeScheduledAt",
+        "outputs":  [
+                        {
+                            "internalType":  "uint256",
+                            "name":  "",
+                            "type":  "uint256"
+                        }
+                    ],
+        "stateMutability":  "view",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "address",
+                           "name":  "newImplementation",
+                           "type":  "address"
+                       },
+                       {
+                           "internalType":  "bytes",
+                           "name":  "data",
+                           "type":  "bytes"
+                       }
+                   ],
+        "name":  "upgradeToAndCall",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "payable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+
+                   ],
+        "name":  "withdrawPending",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    },
+    {
+        "inputs":  [
+                       {
+                           "internalType":  "uint256",
+                           "name":  "id",
+                           "type":  "uint256"
+                       }
+                   ],
+        "name":  "withdrawUnsoldToken",
+        "outputs":  [
+
+                    ],
+        "stateMutability":  "nonpayable",
+        "type":  "function"
+    }
+]

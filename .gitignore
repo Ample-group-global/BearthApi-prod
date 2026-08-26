@@ -1,0 +1,59 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Claude Code internal folder
+.claude/
+
+# Documentation — no markdown files pushed to GitHub
+*.md
+mddoc-divakar/
+
+# Generated output / demo artifacts
+*.txt
+!requirements.txt
+!app/requirements.txt
+
+# Runtime logs
+*.log
+
+# Backup folders
+BearthApi-backup-2026-07-27/
+.vercel
+
+# Test files (not committed to repo)
+tests/

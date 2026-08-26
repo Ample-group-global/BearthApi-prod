@@ -1,0 +1,63 @@
+{
+  "name": "bearth-api",
+  "version": "2.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsx watch --env-file .env.local src/index.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:push:dev": "dotenv -e .env.local -- drizzle-kit push",
+    "db:push:prod": "drizzle-kit push",
+    "db:studio": "dotenv -e .env.local -- drizzle-kit studio",
+    "db:migrate:dev": "dotenv -e .env.local -- psql $DATABASE_URL -f db/migrate_v3.sql",
+    "db:migrate:prod": "psql $DATABASE_URL -f db/migrate_v3.sql",
+    "db:patch1:dev": "dotenv -e .env.local -- psql $DATABASE_URL -f db/migrate_v3_patch1.sql",
+    "db:patch1:prod": "psql $DATABASE_URL -f db/migrate_v3_patch1.sql",
+    "db:migrate:v12": "tsx --env-file .env.local db/migrate.ts db/migrate_v12_normalize_lookups.sql",
+    "db:patch:views": "tsx --env-file .env.local db/migrate.ts db/patch_v12_lookup_views.sql"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1095.0",
+    "@aws-sdk/s3-request-presigner": "^3.1113.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/multer": "^2.2.0",
+    "@types/sharp": "^0.31.1",
+    "@types/swagger-jsdoc": "^6.0.4",
+    "@types/swagger-ui-express": "^4.1.8",
+    "@vercel/functions": "^3.9.3",
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
+    "ethereum-cryptography": "^2.2.1",
+    "ethers": "^6.17.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.4.1",
+    "googleapis": "^173.0.0",
+    "multer": "^2.2.0",
+    "nodemailer": "^9.0.3",
+    "pg": "^8.13.1",
+    "sharp": "^0.35.3",
+    "swagger-jsdoc": "^6.3.0",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/nodemailer": "^8.0.1",
+    "@types/pg": "^8.11.10",
+    "@types/supertest": "^6.0.3",
+    "drizzle-kit": "^0.31.10",
+    "supertest": "^7.2.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9",
+    "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
