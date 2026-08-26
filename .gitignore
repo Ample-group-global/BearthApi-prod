@@ -57,3 +57,4 @@ BearthApi-backup-2026-07-27/
 
 # Test files (not committed to repo)
 tests/
+.env*

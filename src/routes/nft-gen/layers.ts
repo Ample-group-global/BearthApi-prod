@@ -64,6 +64,16 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
     const files = (req.files ?? []) as Express.Multer.File[];
     const safe = layer.trim().replace(/[^a-zA-Z0-9\-_ ]/g, "");
     if (!safe) { res.status(400).json({ error: "layer name required" }); return; }
+    // Every upload attempt carries its own unique namespace (minted client-side
+    // per drop) so this collection's/run's assets can never collide with, or be
+    // silently overwritten by, another collection's identically-named layer
+    // folder in the shared bucket — the root cause of a real incident where a
+    // generated NFT composited in a completely unrelated stale image because
+    // two uploads had written to the exact same flat key. Falls back to the
+    // legacy flat layout only for older callers that don't send one yet.
+    const rawPrefix = (req.body?.sessionPrefix ?? "") as string;
+    const safePrefix = rawPrefix.trim().replace(/[^a-zA-Z0-9\-_]/g, "");
+    const keyPrefix = safePrefix ? `${safePrefix}/` : "";
     const added: string[] = [];
     const s3Uploaded: string[] = [];
     const s3Failures: string[] = [];
@@ -75,7 +85,7 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
         const base = file.originalname.split(/[\\/]/).pop() ?? file.originalname;
         const safeName = base.replace(/[^a-zA-Z0-9.\-_]/g, "_");
         if (!safeName.match(/\.(png|webp|jpg|jpeg|gif)$/i)) return;
-        const rel = sub ? `${safe}/${sub}` : `${safe}/${safeName}`;
+        const rel = `${keyPrefix}${safe}/${sub || safeName}`;
         try {
           await svc.uploadLayerImageWithThumb(rel, file.buffer);
           s3Uploaded.push(rel);
@@ -86,15 +96,33 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
       }));
     }
 
-    // Only remove this layer's stale leftovers once every new file for it
-    // has actually landed — a partial/failed upload must never trigger a
-    // cleanup, or it could delete files nothing has replaced yet.
-    if (s3Uploaded.length && s3Failures.length === 0) {
-      const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
-      await cleanupStaleLayerFiles(bucket, safe, new Set(s3Uploaded)).catch(() => {});
-    }
-
     res.json({ ok: true, added, s3Uploaded, s3Failures });
+  } catch (e) { next(e); }
+});
+
+// ── POST /upload/finalize — clean up a layer's stale leftovers ──────────────
+// A layer's files can arrive across several /upload calls (the client chunks
+// large layers to stay under typical serverless request-body limits), so
+// cleanup can no longer safely run inside /upload itself — it would delete
+// files a later chunk hasn't uploaded yet. The client already knows every
+// key a layer is SUPPOSED to have (computed once, deterministically, during
+// its own file parse) and calls this once, after every chunk for that layer
+// has confirmed success, passing that complete set as `keptKeys`.
+router.post("/upload/finalize", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.manage_layers");
+    const layer = (req.body?.layer ?? "") as string;
+    const safe = layer.trim().replace(/[^a-zA-Z0-9\-_ ]/g, "");
+    if (!safe) { res.status(400).json({ error: "layer name required" }); return; }
+    const rawPrefix = (req.body?.sessionPrefix ?? "") as string;
+    const safePrefix = rawPrefix.trim().replace(/[^a-zA-Z0-9\-_]/g, "");
+    const keyPrefix = safePrefix ? `${safePrefix}/` : "";
+    const keptKeys = (req.body?.keptKeys ?? []) as string[];
+    if (!Array.isArray(keptKeys) || !keptKeys.length) { res.status(422).json({ error: "keptKeys must be a non-empty array." }); return; }
+
+    const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
+    await cleanupStaleLayerFiles(bucket, `${keyPrefix}${safe}`, new Set(keptKeys));
+    res.json({ ok: true });
   } catch (e) { next(e); }
 });
 
@@ -174,7 +202,11 @@ router.post("/:id/traits/bulk", async (req, res, next) => {
     for (const t of traits) {
       if (!t?.name?.trim()) { res.status(422).json({ error: "Every trait needs a name." }); return; }
       if (!t?.filePath?.trim()) { res.status(422).json({ error: "Every trait needs a filePath." }); return; }
-      const tier = (t.rarityTier ?? "common").toLowerCase();
+      // null/undefined means "not classified" and must stay that way — forcing
+      // it to "common" here defeated the nullable rarity_tier migration for
+      // the exact flow (Excel sync) it was meant to fix.
+      if (t.rarityTier == null) continue;
+      const tier = String(t.rarityTier).toLowerCase();
       if (!VALID_TIERS.includes(tier)) {
         res.status(422).json({ error: "rarityTier must be one of: legendary, epic, rare, common." }); return;
       }
@@ -209,9 +241,12 @@ router.post("/:id/traits", async (req, res, next) => {
     if (!name?.trim()) { res.status(422).json({ error: "Trait name is required." }); return; }
     if (filePath !== null && !filePath?.trim()) { res.status(422).json({ error: "File path is required." }); return; }
     const VALID_TIERS = ["legendary", "epic", "rare", "common"];
-    const tier = (req.body.rarityTier ?? "common").toLowerCase();
-    if (!VALID_TIERS.includes(tier)) {
-      res.status(422).json({ error: "rarityTier must be one of: legendary, epic, rare, common." }); return;
+    let tier: string | undefined;
+    if (req.body.rarityTier != null) {
+      tier = String(req.body.rarityTier).toLowerCase();
+      if (!VALID_TIERS.includes(tier)) {
+        res.status(422).json({ error: "rarityTier must be one of: legendary, epic, rare, common." }); return;
+      }
     }
     const trait = await svc.createTrait({ layerId: req.params.id, ...req.body, rarityTier: tier });
     res.status(201).json({ trait });

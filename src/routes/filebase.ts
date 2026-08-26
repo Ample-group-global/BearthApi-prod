@@ -140,18 +140,23 @@ router.get("/objects", async (req, res, next) => {
     const prefix = req.query.prefix as string | undefined;
     if (!bucket) { res.status(422).json({ error: "bucket query param is required." }); return; }
 
-    const result = await getS3Client().send(new ListObjectsV2Command({
-      Bucket: bucket,
-      Prefix: prefix,
-      MaxKeys: 1000,
-    }));
-
-    const objects = (result.Contents ?? []).map(o => ({
-      key:          o.Key,
-      size:         o.Size,
-      lastModified: o.LastModified,
-      etag:         o.ETag,
-    }));
+    // A single ListObjectsV2 call only ever returns up to 1,000 keys — without
+    // following ContinuationToken this silently truncated any bucket larger
+    // than that (a real 9,999-item collection has well over 1,000 objects
+    // once metadata is included), making bucket counts/contents look wrong
+    // for exactly the large collections this tool exists to manage.
+    const s3 = getS3Client();
+    const objects: Array<{ key?: string; size?: number; lastModified?: Date; etag?: string }> = [];
+    let continuationToken: string | undefined;
+    do {
+      const result = await s3.send(new ListObjectsV2Command({
+        Bucket: bucket, Prefix: prefix, MaxKeys: 1000, ContinuationToken: continuationToken,
+      }));
+      for (const o of result.Contents ?? []) {
+        objects.push({ key: o.Key, size: o.Size, lastModified: o.LastModified, etag: o.ETag });
+      }
+      continuationToken = result.IsTruncated ? result.NextContinuationToken : undefined;
+    } while (continuationToken);
 
     res.json({ bucket, count: objects.length, objects });
   } catch (e) { next(e); }

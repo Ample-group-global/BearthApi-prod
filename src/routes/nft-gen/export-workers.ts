@@ -104,6 +104,20 @@ export async function runExport(
   const fetchLayerBuf = makeLayerFetcher();
   const fetchLayerResized = makeResizedFetcher(fetchLayerBuf, width, height);
 
+  // Heartbeat, independent of any specific progress-update call site — this
+  // answers "is the process still alive", which is what the start-export
+  // route's staleness check needs. A process killed outright by the
+  // platform's execution-time limit stops updating this immediately, so a
+  // future export attempt can tell that apart from one that's merely slow.
+  const heartbeat = setInterval(() => { state.lastUpdatedAt = Date.now(); }, 10_000);
+  try {
+    return await runExportBody();
+  } finally {
+    clearInterval(heartbeat);
+  }
+
+  async function runExportBody() {
+
   const safeName = (collectionName || "bearth-nft-collection").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
   const zipKey = `downloads/${jobId}.zip`;
   let zipS3: S3MultipartWritable | null = null;
@@ -178,7 +192,15 @@ export async function runExport(
         const resized: Buffer[] = [];
         for (const layer of validLayers) {
           const buf = await fetchLayerResized(layer.file_path!);
-          if (buf) resized.push(buf);
+          // A trait row exists in the DB but its source image can't be fetched
+          // from storage — silently dropping it here used to let the export
+          // "succeed" while quietly compositing an incomplete image (a real
+          // incident: missing head/face layers shipped as if nothing were
+          // wrong). Every trait a generated NFT is supposed to have must
+          // actually be present, so a missing source image fails the whole
+          // export loudly instead of shipping a wrong NFT as correct.
+          if (!buf) throw new Error(`Missing layer image for edition #${editionNum}: "${layer.trait_type}" -> "${layer.file_path}" not found in storage.`);
+          resized.push(buf);
         }
 
         let imgBuf: Buffer;
@@ -205,6 +227,25 @@ export async function runExport(
     }
 
     await Promise.all(Array.from({ length: CONCURRENCY }, processOneImage));
+
+    // The drain above only advances sequentially through `nextToUpload` — if
+    // this batch's edition numbers have a gap (e.g. a hole in edition_number
+    // values, which a collection whose supply changed after generation can
+    // legitimately have), the drain silently stalls right before the gap and
+    // every already-composited image queued behind it in `pending` is simply
+    // abandoned as the loop moves to the next batch's fresh queue. That
+    // previously let an export finish and report full success while a chunk
+    // of images were never actually uploaded — the export must fail loudly
+    // here instead, not ship (or silently report) an incomplete collection.
+    if (pending.size > 0) {
+      const stuckAt = nextToUpload;
+      throw new Error(
+        `Export stalled in batch ${offset + 1}-${batchEnd}: ${pending.size} composited image(s) never uploaded ` +
+        `because edition #${stuckAt} is missing from this job's edition_number sequence. ` +
+        `Uploaded through #${stuckAt - 1}; editions queued but undrained: ${[...pending.keys()].sort((a, b) => a - b).join(', ')}.`
+      );
+    }
+
     await saveTask(exportId, 'export', { status: 'running', phase: state.phase, progress: state.progress, total, meta: { jobId } });
   }
 
@@ -378,6 +419,7 @@ export async function runExport(
     ? `Complete — ${uploadedCount} NFTs uploaded${resumeFrom > 0 ? ` (${total} total in bucket)` : ''}${zipOk ? ' · ZIP ready' : ''}, ${synced} synced to NFT Records${unresolvedSuffix}`
     : `Complete — ${uploadedCount} NFTs uploaded${resumeFrom > 0 ? ` (${total} total in bucket)` : ''}${zipOk ? ' · ZIP ready for instant download' : ''} (test run — nft_records not updated)${unresolvedSuffix}`;
   await saveTask(exportId, 'export', { status: 'done', phase: state.phase, progress: total, total, meta: { jobId } });
+  }
 }
 
 export async function runPreview(
@@ -432,7 +474,10 @@ export async function runPreview(
         const resized: Buffer[] = [];
         for (const layer of validLayers) {
           const raw = await fetchLayerBuf(layer.file_path!);
-          if (!raw) continue;
+          // See runExport's identical check — a trait row without a fetchable
+          // source image must fail loudly, not silently render an incomplete
+          // preview as if it were correct.
+          if (!raw) throw new Error(`Missing layer image for edition #${editionNum}: "${layer.trait_type}" -> "${layer.file_path}" not found in storage.`);
           resized.push(await getResized(layer.file_path!, raw));
         }
 

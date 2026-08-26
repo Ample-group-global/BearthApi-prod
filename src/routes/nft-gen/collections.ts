@@ -162,7 +162,10 @@ router.get("/:id/layers-organise", async (req, res, next) => {
             name: t.name,
             rel: t.file_path,
             defaultWeight: Number(t.rarity_weight ?? 1),
-            rarityTier: t.rarity_tier ?? 'common',
+            // Pass through as-is — null means "never explicitly classified"
+            // and must reach the frontend that way so it falls back to a
+            // live weight-based badge instead of a forced, misleading default.
+            rarityTier: t.rarity_tier ?? null,
           }))
           .sort((a: any, b: any) =>
             a.stem.localeCompare(b.stem, undefined, { numeric: true, sensitivity: 'base' })

@@ -4,6 +4,13 @@ export interface ExportState {
   total: number;
   phase: string;
   error?: string;
+  // Bumped on every progress update — lets the start-export route tell a
+  // genuinely stuck job apart from one whose serverless invocation was
+  // killed outright (e.g. Vercel's execution-time limit). A hard kill never
+  // runs the route's own .finally() cleanup, so without this the "running"
+  // flag would stay stuck forever and permanently block every future export
+  // attempt for the whole app, not just this job.
+  lastUpdatedAt: number;
 }
 
 export interface RefreshCidState {

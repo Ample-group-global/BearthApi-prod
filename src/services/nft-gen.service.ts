@@ -157,7 +157,7 @@ export async function createTrait(params: {
   const { layerId, name, filePath, rarityTier, storageProvider, rarityWeight } = params;
   const { rows } = await pool.query(
     "SELECT * FROM nft_gen_trait_create($1, $2, $3, $4, $5, $6)",
-    [layerId, name, filePath, rarityTier ?? "common", storageProvider ?? "filebase", rarityWeight ?? null],
+    [layerId, name, filePath, rarityTier ?? null, storageProvider ?? "filebase", rarityWeight ?? null],
   );
   return rows[0] ?? null;
 }
@@ -177,7 +177,7 @@ export async function createTraitsBulk(
   const payload = traits.map((t) => ({
     name: t.name,
     file_path: t.filePath,
-    rarity_tier: t.rarityTier ?? "common",
+    rarity_tier: t.rarityTier ?? null,
     storage_provider: t.storageProvider ?? "filebase",
     rarity_weight: t.rarityWeight ?? null,
   }));

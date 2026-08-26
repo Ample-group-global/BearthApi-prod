@@ -49,8 +49,22 @@ router.post("/", async (req, res, next) => {
     if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
     if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
     if (exportMeta.running) {
-      res.status(409).json({ error: "An export is already running. Wait for it to complete before starting a new one." });
-      return;
+      // A "running" flag can outlive the process that set it — a serverless
+      // invocation killed by the platform's execution-time limit never runs
+      // its own cleanup, so this would otherwise stay stuck forever and
+      // block every export, for any collection, until the instance happens
+      // to recycle. Treat it as abandoned once it's gone quiet longer than
+      // any real progress tick should take (worker updates every batch —
+      // 90s of silence is well past that even for a slow batch).
+      const STALE_MS = 90_000;
+      const runningJob = [...exportMeta.jobs.values()].find(j => j.status === 'running');
+      const isStale = !runningJob || (Date.now() - runningJob.lastUpdatedAt) > STALE_MS;
+      if (isStale) {
+        exportMeta.running = false;
+      } else {
+        res.status(409).json({ error: "An export is already running. Wait for it to complete before starting a new one." });
+        return;
+      }
     }
 
     // width/height are optional — most callers (e.g. Collection Sync Status)
@@ -92,7 +106,7 @@ router.post("/", async (req, res, next) => {
 
     const startFrom = Math.max(0, Math.min(Number(resumeFrom) || 0, total));
     const exportId = randomUUID();
-    exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…" });
+    exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now() });
 
     exportMeta.running = true;
     const exportJob = runExport(exportId, jobId, {
@@ -249,7 +263,10 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
             const resized: Buffer[] = [];
             for (const layer of validLayers) {
               const raw = await fetchLayerBuf(layer.file_path!);
-              if (!raw) continue;
+              // See export-workers.ts's identical check — a trait row without a
+              // fetchable source image must fail the download loudly, not
+              // silently ship an incomplete NFT image as if it were correct.
+              if (!raw) throw new Error(`Missing layer image for edition #${editionNum}: "${layer.trait_type}" -> "${layer.file_path}" not found in storage.`);
               resized.push(await sharp(raw).resize(width, height, { kernel: sharp.kernel.lanczos3, fit: "fill" }).toBuffer());
             }
 
