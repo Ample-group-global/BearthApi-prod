@@ -40,7 +40,7 @@ router.post("/", async (req, res, next) => {
 
     const {
       jobId, bucket,
-      format = "png", width, height,
+      format = "png", width: bodyWidth, height: bodyHeight,
       collectionName = "", description = "", nameFormat = "",
       syncToRecords = true,
       resumeFrom = 0,
@@ -51,6 +51,23 @@ router.post("/", async (req, res, next) => {
     if (exportMeta.running) {
       res.status(409).json({ error: "An export is already running. Wait for it to complete before starting a new one." });
       return;
+    }
+
+    // width/height are optional — most callers (e.g. Collection Sync Status)
+    // never had a reason to know them, since the collection already stores
+    // its own export resolution. Fall back to that single source of truth
+    // instead of requiring every caller to duplicate it.
+    let width = bodyWidth;
+    let height = bodyHeight;
+    if (!width || !height) {
+      const { rows: dimRows } = await pool.query(
+        `SELECT c.format_width, c.format_height FROM nft_generation_jobs j
+         JOIN nft_collections c ON c.id = j.collection_id
+         WHERE j.id = $1::uuid`,
+        [jobId],
+      );
+      width = width || dimRows[0]?.format_width;
+      height = height || dimRows[0]?.format_height;
     }
     if (!width || Number(width) < 1) { res.status(422).json({ error: "width is required and must be >= 1 px." }); return; }
     if (!height || Number(height) < 1) { res.status(422).json({ error: "height is required and must be >= 1 px." }); return; }
