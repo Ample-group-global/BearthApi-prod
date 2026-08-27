@@ -5,6 +5,7 @@ import { requirePermission } from "../../adminAuth";
 import * as svc from "../../services/nft-gen.service";
 import { getS3Client } from "../../clients/s3";
 import { deleteObjectsChunked } from "../../utils/deleteObjects";
+import pool from "../../pool";
 
 // Deletes only the stale objects left over from a previous import of this
 // same layer — i.e. keys under `${layer}/` that aren't in the set we just
@@ -65,6 +66,70 @@ router.post("/clear-bucket", async (req, res, next) => {
     } while (continuationToken);
 
     res.json({ ok: true, bucket, prefix, deleted });
+  } catch (e) { next(e); }
+});
+
+// ── GET /collections/:id/prefixes — distinct upload-session prefixes this ────
+// collection's traits currently reference. Used by the Settings-tab re-upload
+// flow to know what to clean up afterward -- see /cleanup-orphaned-prefix.
+router.get("/collections/:id/prefixes", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const { rows } = await pool.query(
+      `SELECT DISTINCT split_part(nt.file_path, '/', 1) AS prefix
+       FROM nft_traits nt JOIN nft_layers nl ON nl.id = nt.layer_id
+       WHERE nl.collection_id = $1::uuid AND nt.file_path IS NOT NULL`,
+      [req.params.id],
+    );
+    res.json({ prefixes: rows.map(r => r.prefix).filter(Boolean) });
+  } catch (e) { next(e); }
+});
+
+// ── POST /cleanup-orphaned-prefix — delete a session-prefix folder, but ──────
+// only if no trait row anywhere in the DB still references it. A layer
+// re-upload mints a brand new random prefix every time (by design, so two
+// artists' concurrent uploads never collide) -- but nothing used to clean up
+// the PREVIOUS prefix once its traits were repointed at the new one, so
+// bearth-layers accumulated an orphaned ~40MB+ folder on every single
+// re-upload of the same collection (confirmed live: 5 abandoned prefixes,
+// ~250MB, from repeated re-uploads during one test session). Self-verifying
+// by design -- never deletes a prefix still in active use, so it's safe to
+// call speculatively after every sync.
+router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.manage_layers");
+    const rawPrefix = (req.body?.prefix ?? "") as string;
+    const safePrefix = rawPrefix.trim().replace(/[^a-zA-Z0-9\-_]/g, "");
+    if (!safePrefix) { res.status(422).json({ error: "prefix is required." }); return; }
+
+    const { rows } = await pool.query(
+      `SELECT 1 FROM nft_traits WHERE file_path LIKE $1 LIMIT 1`,
+      [`${safePrefix}/%`],
+    );
+    if (rows.length) { res.json({ ok: true, deleted: 0, reason: "still referenced" }); return; }
+
+    const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
+    const s3 = getS3Client();
+    let deleted = 0;
+    let continuationToken: string | undefined;
+    const prefix = `${safePrefix}/`;
+    do {
+      const list = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, MaxKeys: 1000, ContinuationToken: continuationToken }));
+      const keys = (list.Contents ?? []).map(o => o.Key!).filter(Boolean);
+      if (keys.length) deleted += await deleteObjectsChunked(s3, bucket, keys);
+      continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
+    } while (continuationToken);
+
+    // Same prefix also appears under _thumbs/{size}/{prefix}/... — clean
+    // those up too so the cache doesn't keep dead entries forever.
+    let thumbDeleted = 0;
+    const thumbList = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: "_thumbs/", MaxKeys: 1000 }));
+    const thumbKeys = (thumbList.Contents ?? [])
+      .map(o => o.Key!).filter(Boolean)
+      .filter(k => k.split("/")[2] === safePrefix);
+    if (thumbKeys.length) thumbDeleted = await deleteObjectsChunked(s3, bucket, thumbKeys);
+
+    res.json({ ok: true, bucket, prefix, deleted, thumbDeleted });
   } catch (e) { next(e); }
 });
 
