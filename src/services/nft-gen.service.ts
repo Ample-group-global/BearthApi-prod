@@ -502,7 +502,32 @@ export async function batchUpdateItemIpfsCids(params: {
 // to promote just that job's items, or omit it to sweep every job — when
 // sweeping all jobs, DISTINCT ON + created_at DESC picks the most recent
 // item per edition_number in case more than one job produced that edition.
-export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<number> {
+export async function syncGeneratedItemsToNftRecords(jobId?: string, force = false): Promise<number> {
+  // nft_records is meant to hold exactly one collection's data at a time —
+  // syncing a second collection into it used to just upsert on top,
+  // silently leaving a mix of two collections' rows behind. Block that
+  // unless the caller explicitly opts in with force (e.g. after
+  // deliberately clearing nft_records to switch to a new collection).
+  if (jobId && !force) {
+    const { rows: existingJobRows } = await pool.query(
+      `SELECT DISTINCT gi.job_id FROM nft_records nr
+       JOIN nft_generated_items gi ON gi.id = nr.generated_item_id
+       WHERE nr.generated_item_id IS NOT NULL AND gi.job_id <> $1::uuid`,
+      [jobId],
+    );
+    if (existingJobRows.length) {
+      const { rows: collRows } = await pool.query(
+        `SELECT DISTINCT c.name FROM nft_generated_items gi
+         JOIN nft_generation_jobs j ON j.id = gi.job_id
+         JOIN nft_collections c ON c.id = j.collection_id
+         WHERE gi.job_id = ANY($1::uuid[])`,
+        [existingJobRows.map(r => r.job_id)],
+      );
+      const names = collRows.map(r => r.name).join(", ") || "a different collection";
+      throw new Error(`nft_records already holds data for ${names}. Clear it first (or pass force) before syncing a different collection.`);
+    }
+  }
+
   const { rows: lookupRows } = await pool.query(
     `SELECT id, category, code FROM lookup_values
      WHERE (category = 'nft_stage'       AND code = 'genesis')
