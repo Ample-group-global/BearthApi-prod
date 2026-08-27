@@ -18,6 +18,11 @@ interface GenerateState {
   total: number;
   jobId?: string;
   error?: string;
+  // 1-indexed editions that couldn't find a unique trait combination after
+  // 200 attempts and were generated as a duplicate of an earlier edition —
+  // present only when this actually happened, so the artist can see it
+  // instead of it being silently swallowed.
+  duplicateEditions?: number[];
 }
 const generateJobs = new Map<string, GenerateState>();
 
@@ -71,7 +76,7 @@ router.post("/preview", async (req, res, next) => {
     if (editionSize > 50000) { res.status(422).json({ error: "supply cannot exceed 50,000." }); return; }
     if (!Array.isArray(layers) || !layers.length) { res.status(422).json({ error: "layers must be a non-empty array." }); return; }
 
-    const combos = generateAllCombos(editionSize, layers, weights ?? {}, conflicts ?? []);
+    const { combos, duplicateEditions } = generateAllCombos(editionSize, layers, weights ?? {}, conflicts ?? []);
     const scored = computeRarity(combos, layers);
 
     res.json({
@@ -82,6 +87,7 @@ router.post("/preview", async (req, res, next) => {
         tier: item.tier,
         combo: combos[item.index - 1],
       })),
+      duplicateEditions,
     });
   } catch (e) { next(e); }
 });
@@ -142,10 +148,22 @@ function resolveConflicts(picks: Record<string, Asset | null>, rules: ConflictRu
   }
 }
 
-function generateAllCombos(supply: number, layers: Layer[], weights: Record<string, Record<string, number>>, conflicts: ConflictRule[]): Record<string, Asset | null>[] {
+// duplicateEditions collects the 1-indexed edition numbers where all 200
+// attempts collided with an already-used trait combination — this used to
+// be silently swallowed (the loop just exits and returns the last, still-
+// duplicate attempt as if it were fine), so an artist with heavily skewed
+// weights or a supply close to their trait set's max unique-combo ceiling
+// could end up with two "different" NFTs sharing identical artwork and
+// never know it. Callers surface this list; nothing about force/block rule
+// matching or the weighted-pick algorithm itself changes.
+function generateAllCombos(
+  supply: number, layers: Layer[], weights: Record<string, Record<string, number>>, conflicts: ConflictRule[],
+): { combos: Record<string, Asset | null>[]; duplicateEditions: number[] } {
   const seen = new Set<string>();
-  return Array.from({ length: supply }, () => {
+  const duplicateEditions: number[] = [];
+  const combos = Array.from({ length: supply }, (_, i) => {
     let picks: Record<string, Asset | null> = {};
+    let unique = false;
     for (let attempt = 0; attempt < 200; attempt++) {
       picks = {};
       for (const layer of layers) {
@@ -158,10 +176,12 @@ function generateAllCombos(supply: number, layers: Layer[], weights: Record<stri
       }
       resolveConflicts(picks, conflicts, weights, layers);
       const key = layers.filter(l => !l.bypassDna).map(l => picks[l.folder]?.stem ?? "").join("|");
-      if (!seen.has(key)) { seen.add(key); break; }
+      if (!seen.has(key)) { seen.add(key); unique = true; break; }
     }
+    if (!unique) duplicateEditions.push(i + 1);
     return picks;
   });
+  return { combos, duplicateEditions };
 }
 
 type RarityTier = "Legendary" | "Epic" | "Rare" | "Common";
@@ -271,7 +291,11 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
   state.phase = "Generating combinations…";
 
   // 5. Run combo + rarity algorithm
-  const combos = generateAllCombos(editionSize, layers, weights, conflicts);
+  const { combos, duplicateEditions } = generateAllCombos(editionSize, layers, weights, conflicts);
+  if (duplicateEditions.length) {
+    logger.warn(`[generate] ${duplicateEditions.length} edition(s) could not find a unique trait combination after 200 attempts (collection ${collectionId}): ${duplicateEditions.join(", ")}`);
+    state.duplicateEditions = duplicateEditions;
+  }
   state.phase = "Computing rarity…";
   const scored = computeRarity(combos, layers);
 
@@ -313,8 +337,13 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
   // 8. Complete job, then clean up old jobs (after inserts finish to avoid lock contention)
   await svc.completeJob(String(jobId));
   state.status = "done";
-  state.phase = `Complete — ${editionSize} NFTs generated`;
-  await saveTask(generateId, 'generate', { status: 'done', phase: state.phase, progress: editionSize, total: editionSize, meta: { collectionId, jobId: String(jobId) } });
+  state.phase = duplicateEditions.length
+    ? `Complete — ${editionSize} NFTs generated (${duplicateEditions.length} could not get a fully unique combination)`
+    : `Complete — ${editionSize} NFTs generated`;
+  await saveTask(generateId, 'generate', {
+    status: 'done', phase: state.phase, progress: editionSize, total: editionSize,
+    meta: { collectionId, jobId: String(jobId), ...(duplicateEditions.length ? { duplicateEditions } : {}) },
+  });
 
   cleanOldGenerationData(collectionId, String(jobId)).catch(err =>
     logger.warn("[generate] cleanup error (non-critical)", err)
