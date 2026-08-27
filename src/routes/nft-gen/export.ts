@@ -352,7 +352,7 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
               attributes: [
                 ...traitAttributes,
                 { trait_type: "Rarity Score", value: (editionData.rarityScore || 0).toFixed(2) },
-                { trait_type: "Rarity Rank", value: `#${editionData.rarityRank || editionNum}` },
+                { trait_type: "Rarity Rank", value: `#${editionData.rarityRank}` },
                 { trait_type: "Rarity Tier", value: editionData.rarityTier || "Common" },
               ],
             }, null, 2);
