@@ -57,12 +57,22 @@ router.post("/", async (req, res, next) => {
       // any real progress tick should take (worker updates every batch —
       // 90s of silence is well past that even for a slow batch).
       const STALE_MS = 90_000;
-      const runningJob = [...exportMeta.jobs.values()].find(j => j.status === 'running');
-      const isStale = !runningJob || (Date.now() - runningJob.lastUpdatedAt) > STALE_MS;
+      const runningEntry = [...exportMeta.jobs.entries()].find(([, j]) => j.status === 'running');
+      const isStale = !runningEntry || (Date.now() - runningEntry[1].lastUpdatedAt) > STALE_MS;
       if (isStale) {
         exportMeta.running = false;
       } else {
-        res.status(409).json({ error: "An export is already running. Wait for it to complete before starting a new one." });
+        // Include the running job's own id/progress so the caller can show
+        // live progress instead of a dead-end "please wait" message — the
+        // artist has no way to gauge how much longer to wait otherwise.
+        const [runningExportId, runningJob] = runningEntry;
+        res.status(409).json({
+          error: "An export is already running. Wait for it to complete before starting a new one.",
+          exportId: runningExportId,
+          progress: runningJob.progress,
+          total: runningJob.total,
+          phase: runningJob.phase,
+        });
         return;
       }
     }

@@ -147,7 +147,16 @@ export async function runExport(
       byEdition.get(row.edition_number)!.layers.push(row);
     }
     const editions = [...byEdition.keys()].sort((a, b) => a - b);
-    const uniquePaths = [...new Set(rows.map(r => r.file_path).filter(Boolean))] as string[];
+    // Only warm the layer cache for editions this invocation will actually
+    // composite — on a resume mid-batch, most of the batch's editions are
+    // already uploaded and get skipped entirely (see the resumeFrom check
+    // below), but prewarming used to fetch+resize every unique layer image
+    // used ANYWHERE in the full 500-item batch regardless. Since a batch
+    // this size typically touches most of the layer set anyway, that made
+    // every resume pay close to the same fixed prewarm cost even when only
+    // a handful of editions actually remained.
+    const remainingPaths = rows.filter(r => r.edition_number > resumeFrom).map(r => r.file_path);
+    const uniquePaths = [...new Set(remainingPaths.filter(Boolean))] as string[];
     const PREWARM_C = 10;
     for (let p = 0; p < uniquePaths.length; p += PREWARM_C) {
       await Promise.all(uniquePaths.slice(p, p + PREWARM_C).map(fp => fetchLayerResized(fp)));
@@ -251,9 +260,28 @@ export async function runExport(
 
   const ipfsUpdates: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string; imagePath: string }> = [];
   const missedCids: Array<{ editionNumber: number; imgKey: string; metaKey: string }> = [];
-  let metaDone = 0;
 
-  for (let offset = 0; offset < total; offset += BATCH) {
+  // Phase 2 has its own resume point, independent of the image resumeFrom —
+  // image upload can finish well before metadata/CID resolution does, and
+  // without this an invocation that dies mid-Phase-2 (Vercel's execution
+  // limit, a reconnect) always restarted metadata from edition #1, re-doing
+  // already-uploaded work every time and never advancing past whatever a
+  // single invocation's window could redo from scratch.
+  let metaResumeFrom = 0;
+  {
+    let continuationToken: string | undefined;
+    let metaCount = 0;
+    do {
+      const resp = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: "metadata/", ContinuationToken: continuationToken }));
+      metaCount += (resp.Contents ?? []).length;
+      continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+    } while (continuationToken);
+    metaResumeFrom = metaCount;
+  }
+  const metaLoopStart = Math.floor(metaResumeFrom / BATCH) * BATCH;
+  let metaDone = metaResumeFrom;
+
+  for (let offset = metaLoopStart; offset < total; offset += BATCH) {
     const batchEnd = Math.min(offset + BATCH, total);
 
     const rows2 = await fetchEditionRows(jobId, offset, batchEnd);
@@ -273,7 +301,7 @@ export async function runExport(
 
     const editions2 = [...byEdition2.keys()].sort((a, b) => a - b);
     let cursor2 = 0;
-    let nextMetaUpload = editions2[0] ?? offset + 1;
+    let nextMetaUpload = editions2.find(e => e > metaResumeFrom) ?? offset + 1;
     const pendingMeta = new Map<number, { metaJson: string; imgCid: string; metaKey: string; imgKey: string }>();
     let drainingMeta = false;
     const META_MAX_LEAD = 20;
@@ -309,6 +337,9 @@ export async function runExport(
     async function processOneMeta() {
       while (cursor2 < editions2.length) {
         const editionNum = editions2[cursor2++];
+        // Skip editions whose metadata was already uploaded before this resume point.
+        if (editionNum <= metaResumeFrom) continue;
+
         const { layers, rarityScore, rarityRank, rarityTier } = byEdition2.get(editionNum)!;
         const imgKey = `images/${editionNum}.${ext}`;
         const metaKey = `metadata/${editionNum}.json`;
