@@ -7,7 +7,9 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   ListObjectsV2Command,
+  GetObjectCommand,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { requirePermission } from "../adminAuth";
 import { getS3Client } from "../clients/s3";
 import { pollCid } from "../utils/pollCid";
@@ -159,6 +161,38 @@ router.get("/objects", async (req, res, next) => {
     } while (continuationToken);
 
     res.json({ bucket, count: objects.length, objects });
+  } catch (e) { next(e); }
+});
+
+// ── POST /api/filebase/presigned-urls — batch presigned GET URLs ──────────────
+// Body: { bucket: string, keys: string[] }
+// Signing is local crypto, not an S3 round-trip — cheap even for ~20,000 keys.
+// Lets the browser download each file directly from Filebase (bypassing the
+// Vercel-proxied API entirely for the actual bytes), matching how
+// scripts/download-filebase-bucket.js downloads straight from S3 with no
+// intermediate hop — the same reasoning applied to a browser-side downloader.
+router.post("/presigned-urls", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.upload_ipfs");
+    const { bucket, keys } = req.body as { bucket?: string; keys?: string[] };
+    if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
+    if (!Array.isArray(keys) || keys.length === 0) { res.status(422).json({ error: "keys array is required." }); return; }
+    if (keys.length > 5000) { res.status(422).json({ error: "Max 5000 keys per request." }); return; }
+
+    const keyList = keys;
+    const s3 = getS3Client();
+    const urls: Record<string, string> = {};
+    const CONCURRENCY = 50;
+    let cursor = 0;
+    async function worker() {
+      while (cursor < keyList.length) {
+        const key = keyList[cursor++];
+        urls[key] = await getSignedUrl(s3, new GetObjectCommand({ Bucket: bucket, Key: key }), { expiresIn: 3600 });
+      }
+    }
+    await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+
+    res.json({ urls });
   } catch (e) { next(e); }
 });
 
