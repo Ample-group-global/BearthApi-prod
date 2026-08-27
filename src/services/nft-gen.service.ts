@@ -515,6 +515,14 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     throw new Error("Required lookup values (nft_stage:genesis, delivery_status:pending) not found");
   }
 
+  // Same blindbox image every collection uses pre-reveal — same bucket
+  // convention as jobs.ts's own default (V1 always exports to bearth-nft-it).
+  // A miss here just means blind_box_uri stays null for this sync; it never
+  // blocks the rest of the sync.
+  const blindboxBucket = process.env.FILEBASE_BUCKET || "bearth-nft-it";
+  const blindboxCid = await filebaseHead(blindboxBucket, "AssetBlindbox/bearthblindboximage1.png");
+  const blindBoxUri = blindboxCid ? `${FILEBASE_GATEWAY}/${blindboxCid}` : null;
+
   // Traits live in nft_item_traits, not on nft_generated_items.metadata_json —
   // that column only ever stores the rarity summary ({rank, tier, score}),
   // never an "attributes" array. Reading meta.attributes here always found
@@ -567,6 +575,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
       image_ipfs_hash: item.ipfs_image_cid,
       metadata_ipfs_hash: item.ipfs_metadata_cid,
       metadata_uri: `ipfs://${item.ipfs_metadata_cid}`,
+      blind_box_uri: blindBoxUri,
       traits,
       rarity_score: meta.score != null ? Number(meta.score) : null,
       rarity_rank: meta.rank != null ? Number(meta.rank) : null,
@@ -575,7 +584,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
   });
 
   const { rowCount } = await pool.query(
-    `INSERT INTO nft_records (serial_number, stage_id, delivery_status_id, generated_item_id, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, traits, rarity_score, rarity_rank, rarity_tier)
+    `INSERT INTO nft_records (serial_number, stage_id, delivery_status_id, generated_item_id, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier)
      SELECT
        x.serial_number,
        x.stage_id::uuid,
@@ -584,13 +593,14 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
        x.image_ipfs_hash,
        x.metadata_ipfs_hash,
        x.metadata_uri,
+       x.blind_box_uri,
        x.traits,
        x.rarity_score,
        x.rarity_rank,
        x.rarity_tier
      FROM json_to_recordset($1::json) AS x(
        serial_number text, stage_id text, delivery_status_id text, generated_item_id text,
-       image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text, traits jsonb,
+       image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text, blind_box_uri text, traits jsonb,
        rarity_score numeric, rarity_rank int, rarity_tier text
      )
      ON CONFLICT (serial_number) DO UPDATE SET
@@ -598,6 +608,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
        metadata_ipfs_hash = EXCLUDED.metadata_ipfs_hash,
        metadata_uri       = EXCLUDED.metadata_uri,
        generated_item_id  = COALESCE(EXCLUDED.generated_item_id, nft_records.generated_item_id),
+       blind_box_uri      = COALESCE(EXCLUDED.blind_box_uri, nft_records.blind_box_uri),
        traits             = EXCLUDED.traits,
        rarity_score       = COALESCE(EXCLUDED.rarity_score, nft_records.rarity_score),
        rarity_rank        = COALESCE(EXCLUDED.rarity_rank,  nft_records.rarity_rank),
