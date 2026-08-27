@@ -588,6 +588,26 @@ router.get("/refresh-cids/:refreshId", async (req, res) => {
   res.json(db);
 });
 
+// ── GET /cid-status?jobId=... — how many editions are missing a CID ───────────
+// So the UI can show the artist a real count up front instead of a hidden
+// "Advanced" section she has no way to know she needs to open. Declared
+// before the /:exportId catch-all below — Express matches route patterns
+// in declaration order, so a literal path placed after a `:param` route
+// would otherwise be swallowed by it.
+router.get("/cid-status", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const jobId = req.query.jobId as string | undefined;
+    if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) AS total, COUNT(*) FILTER (WHERE ipfs_image_cid IS NULL OR ipfs_image_cid = '') AS missing
+       FROM nft_generated_items WHERE job_id = $1::uuid`,
+      [jobId],
+    );
+    res.json({ total: Number(rows[0]?.total ?? 0), missing: Number(rows[0]?.missing ?? 0) });
+  } catch (e) { next(e); }
+});
+
 // ── GET /:exportId — poll status ──────────────────────────────────────────────
 
 router.get("/:exportId", async (req, res) => {
