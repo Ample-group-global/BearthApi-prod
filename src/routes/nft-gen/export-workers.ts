@@ -19,13 +19,16 @@ import { exportMeta, refreshCidMeta, previewMeta, zipRegistry } from "./export-s
 import { saveTask } from "../../utils/taskProgress";
 
 export const BATCH = 500;
-// Moderate bump from 50 — the prior OOM (commit c5bea71) was an unbounded
-// resized-buffer cache, not this concurrency level itself; that fix is
-// still in place. Going much higher risks CPU contention on Sharp's
-// compositing work outweighing the I/O parallelism gain, so staying
-// conservative rather than jumping straight to something aggressive.
-export const CONCURRENCY = 80;
-const META_CONCURRENCY = 30;
+// Pushed toward the practical ceiling per explicit request. Each in-flight
+// compositing operation holds real memory (raw layer buffers + a ~16MB
+// uncompressed 2000x2000 RGBA output buffer) even while queued behind
+// libvips' internal CPU thread pool, so this isn't free to raise without
+// limit — too high risks a real OOM (the exact failure mode from the prior
+// c5bea71 incident, even though that specific bug is fixed). 150 is a
+// meaningfully aggressive value, not an unbounded one; watch for crashes
+// after this deploys and dial back if the instance can't hold it.
+export const CONCURRENCY = 150;
+const META_CONCURRENCY = 60;
 const REFRESH_CONCURRENCY = 20;
 const PREVIEW_THUMB = 64;
 const PREVIEW_CONCURRENCY = 20;
