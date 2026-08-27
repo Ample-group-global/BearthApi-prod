@@ -18,6 +18,38 @@ import {
 import { exportMeta, refreshCidMeta, previewMeta, zipRegistry } from "./export-state";
 import { saveTask } from "../../utils/taskProgress";
 
+// I/O concurrency (fetching layers, uploading) and CPU concurrency
+// (Sharp/libvips compositing) have very different optimal levels — I/O
+// scales well into the hundreds, but compositing is bounded by the actual
+// core count, and libvips runs its own internal thread pool regardless of
+// how many JS-level Promise.all slots are "in flight". Without gating,
+// raising CONCURRENCY alone just means more editions sit queued holding
+// full-size image buffers (~16MB each for a 2000x2000 RGBA composite)
+// while waiting on a CPU pool that can only actually work on a few at
+// once — real memory cost for zero real parallelism gain. Explicitly
+// pin libvips' pool to the real core count instead of trusting its own
+// auto-detection (unreliable in some serverless environments), and gate
+// the composite step itself through a matching semaphore so the high
+// outer CONCURRENCY only ever benefits the I/O-bound portions.
+const CPU_COUNT = Math.max(2, os.cpus().length || 2);
+sharp.concurrency(CPU_COUNT);
+function createSemaphore(max: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
+    if (active >= max) await new Promise<void>(resolve => queue.push(resolve));
+    active++;
+    try {
+      return await fn();
+    } finally {
+      active--;
+      const next = queue.shift();
+      if (next) next();
+    }
+  };
+}
+const compositeGate = createSemaphore(CPU_COUNT);
+
 export const BATCH = 500;
 // Pushed toward the practical ceiling per explicit request. Each in-flight
 // compositing operation holds real memory (raw layer buffers + a ~16MB
@@ -220,18 +252,23 @@ export async function runExport(
           resized.push(buf);
         }
 
-        let imgBuf: Buffer;
-        if (resized.length === 0) {
-          imgBuf = await sharp({
-            create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 255 } },
-          }).toFormat(ext === "webp" ? "webp" : "png", ext === "webp" ? { quality: 95, effort: 4 } : {}).toBuffer();
-        } else {
+        // Gated to the real CPU count — the outer loop's high CONCURRENCY
+        // still lets many editions fetch their layers in parallel (I/O-bound,
+        // scales fine), but only CPU_COUNT of them actually run through
+        // Sharp at once, instead of every in-flight edition holding a full
+        // composite buffer while queued behind libvips' own thread pool.
+        const imgBuf: Buffer = await compositeGate(async () => {
+          if (resized.length === 0) {
+            return sharp({
+              create: { width, height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 255 } },
+            }).toFormat(ext === "webp" ? "webp" : "png", ext === "webp" ? { quality: 95, effort: 4 } : {}).toBuffer();
+          }
           const [base, ...rest] = resized;
-          imgBuf = await sharp(base)
+          return sharp(base)
             .composite(rest.map(buf => ({ input: buf, blend: "over" as const })))
             .toFormat(ext === "webp" ? "webp" : "png", ext === "webp" ? { quality: 95, effort: 4 } : {})
             .toBuffer();
-        }
+        });
 
         // Hand off to the sequential uploader — metadata written in Phase 2 with real CID.
         pending.set(editionNum, imgBuf);
