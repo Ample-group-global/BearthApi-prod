@@ -384,8 +384,9 @@ router.get("/presigned-zip/:jobId", async (req, res, next) => {
 router.post("/refresh-cids", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
-    const { bucket, format = "png" } = req.body ?? {};
+    const { bucket, format = "png", jobId, syncToRecords = false } = req.body ?? {};
     if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
+    if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
     if (refreshCidMeta.running) {
       res.status(409).json({ error: "A CID refresh is already running." });
       return;
@@ -393,7 +394,7 @@ router.post("/refresh-cids", async (req, res, next) => {
     const refreshId = randomUUID();
     refreshCidMeta.jobs.set(refreshId, { status: "running", progress: 0, total: 0, resolved: 0, skipped: 0, phase: "Listing images…" });
     refreshCidMeta.running = true;
-    const refreshJob = runRefreshCids(refreshId, bucket, String(format))
+    const refreshJob = runRefreshCids(refreshId, bucket, String(format), String(jobId), Boolean(syncToRecords))
       .catch(async err => {
         const s = refreshCidMeta.jobs.get(refreshId);
         const msg = String(err?.message ?? err);

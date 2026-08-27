@@ -556,16 +556,15 @@ export async function runPreview(
   state.phase = `Complete — ${state.validCount}/${total} valid${state.invalidItems.length ? `, ${state.invalidItems.length} issues` : ''}`;
 }
 
-export async function runRefreshCids(refreshId: string, bucket: string, format: string) {
+export async function runRefreshCids(refreshId: string, bucket: string, format: string, jobId: string, syncToRecords: boolean) {
   const ext = format === "webp" ? "webp" : "png";
   const state = refreshCidMeta.jobs.get(refreshId)!;
   const s3 = getS3Client();
-
-  // Resolve the most recent completed generation job so we can write CIDs back to the DB
-  const { rows: jobRows } = await pool.query(
-    `SELECT id FROM nft_generation_jobs WHERE status = 'complete' ORDER BY created_at DESC LIMIT 1`,
-  );
-  const jobId: string | null = jobRows[0]?.id ?? null;
+  // jobId is supplied by the caller (the exact job the UI has loaded) rather
+  // than guessed as "most recently completed job" — with more than one
+  // completed job in the system, that guess has no relationship to which
+  // job actually owns the selected bucket, and would silently write
+  // resolved CIDs onto the wrong job's rows.
 
   // 1. List every image key in the bucket (handles >1000 via pagination)
   state.phase = "Listing images in bucket…";
@@ -586,9 +585,20 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
   state.total = imageKeys.length;
   state.phase = `Found ${imageKeys.length} images — refreshing CIDs…`;
 
+  // Editions whose DB row already has a CID — the export's own Phase 2 DB
+  // flush only happens once per 500-item batch, so an invocation killed
+  // mid-batch can leave metadata files fully written (with real CIDs) in
+  // storage while their batch's DB write never fired. Checking the JSON for
+  // a literal "pending" placeholder alone misses that case entirely, since
+  // the file already shows a resolved CID — only the DB row is behind.
+  const { rows: dbResolvedRows } = jobId
+    ? await pool.query(`SELECT edition_number FROM nft_generated_items WHERE job_id = $1 AND ipfs_image_cid IS NOT NULL AND ipfs_image_cid != ''`, [jobId])
+    : { rows: [] as { edition_number: number }[] };
+  const dbResolvedEditions = new Set(dbResolvedRows.map(r => r.edition_number));
+
   let cursor = 0;
   // Accumulate resolved CID pairs for the DB batch write at the end
-  const resolvedItems: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string }> = [];
+  const resolvedItems: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string; imagePath: string }> = [];
 
   async function processOne() {
     while (cursor < imageKeys.length) {
@@ -635,28 +645,32 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
         continue;
       }
 
-      // Skip if already resolved (no pending placeholder present)
-      if (!String(parsed.image ?? "").includes("pending")) {
+      const isPendingInFile = String(parsed.image ?? "").includes("pending");
+      const missingInDb = jobId ? !dbResolvedEditions.has(editionNum) : false;
+
+      if (!isPendingInFile && !missingInDb) {
+        // Already resolved in both storage and the database — nothing to do.
         state.progress++; state.skipped++;
         state.phase = `Refreshing CIDs… ${state.progress} / ${state.total}`;
         continue;
       }
 
-      // Replace placeholder with real IPFS URI and re-upload to Filebase
-      parsed.image = `ipfs://${imgCid}`;
-      const newMeta = JSON.stringify(parsed, null, 2);
+      if (isPendingInFile) {
+        // Replace placeholder with real IPFS URI and re-upload to Filebase
+        parsed.image = `ipfs://${imgCid}`;
+        const newMeta = JSON.stringify(parsed, null, 2);
 
-      await s3.send(new PutObjectCommand({
-        Bucket: bucket,
-        Key: metaKey,
-        Body: newMeta,
-        ContentType: "application/json",
-      }));
-
-      // Collect for DB batch update (only when both CIDs are available)
-      if (metaCid) {
-        resolvedItems.push({ editionNumber: editionNum, ipfsImageCid: imgCid, ipfsMetadataCid: metaCid });
+        await s3.send(new PutObjectCommand({
+          Bucket: bucket,
+          Key: metaKey,
+          Body: newMeta,
+          ContentType: "application/json",
+        }));
       }
+
+      // Collect for DB batch update — imgCid is guaranteed present here (checked above);
+      // metaCid may still be empty if Filebase hasn't assigned it yet, which is acceptable.
+      resolvedItems.push({ editionNumber: editionNum, ipfsImageCid: imgCid, ipfsMetadataCid: metaCid, imagePath: imgKey });
 
       state.progress++;
       state.resolved++;
@@ -669,8 +683,12 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
     state.phase = `Writing ${resolvedItems.length} CIDs to database…`;
     await batchUpdateItemIpfsCids({ jobId, items: resolvedItems });
 
-    state.phase = "Syncing CIDs to NFT records…";
-    await syncGeneratedItemsToNftRecords(jobId);
+    // Mirrors the main export's syncToRecords toggle — this route must not
+    // sync to nft_records on its own just because CIDs got resolved.
+    if (syncToRecords) {
+      state.phase = "Syncing CIDs to NFT records…";
+      await syncGeneratedItemsToNftRecords(jobId);
+    }
   }
 
   state.status = "done";
