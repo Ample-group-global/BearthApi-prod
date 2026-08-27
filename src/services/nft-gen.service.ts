@@ -515,11 +515,22 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     throw new Error("Required lookup values (nft_stage:genesis, delivery_status:pending) not found");
   }
 
-  // Same blindbox image every collection uses pre-reveal — same bucket
-  // convention as jobs.ts's own default (V1 always exports to bearth-nft-it).
-  // A miss here just means blind_box_uri stays null for this sync; it never
-  // blocks the rest of the sync.
-  const blindboxBucket = process.env.FILEBASE_BUCKET || "bearth-nft-it";
+  // Every bucket used for export is expected to carry the same standard
+  // blindbox key (AssetBlindbox/bearthblindboximage1.png) — look it up in
+  // whichever bucket THIS job actually exported to (export.ts records that
+  // on nft_generation_jobs.export_bucket at export time), so a different
+  // artist exporting to a different bucket is supported the same way,
+  // instead of assuming everyone uses one hardcoded bucket. Falls back to
+  // the env default only for jobs exported before export_bucket existed, or
+  // when no jobId is given (the bucket-wide legacy path below). A miss here
+  // just means blind_box_uri stays null for this sync; it never blocks sync.
+  let blindboxBucket = process.env.FILEBASE_BUCKET || "bearth-nft-it";
+  if (jobId) {
+    const { rows: bucketRows } = await pool.query(
+      `SELECT export_bucket FROM nft_generation_jobs WHERE id = $1::uuid`, [jobId],
+    );
+    if (bucketRows[0]?.export_bucket) blindboxBucket = bucketRows[0].export_bucket;
+  }
   const blindboxCid = await filebaseHead(blindboxBucket, "AssetBlindbox/bearthblindboximage1.png");
   const blindBoxUri = blindboxCid ? `${FILEBASE_GATEWAY}/${blindboxCid}` : null;
 

@@ -116,6 +116,12 @@ router.post("/", async (req, res, next) => {
     const exportId = randomUUID();
     exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now(), jobId });
 
+    // Remembers which bucket this job's artwork actually lives in — every
+    // sync path (nft_records, blindbox lookup) reads this back instead of
+    // guessing a single hardcoded bucket, so a different artist exporting to
+    // a different bucket is supported the same way.
+    await pool.query(`UPDATE nft_generation_jobs SET export_bucket = $1 WHERE id = $2::uuid`, [bucket, jobId]);
+
     const exportJob = runExport(exportId, jobId, {
       bucket,
       format: String(format),
@@ -199,6 +205,11 @@ router.post("/range", async (req, res, next) => {
       });
       return;
     }
+
+    // Same bucket bookkeeping as the single-shot POST / — whichever slice
+    // lands first records it, redundant but harmless for sibling slices of
+    // the same job/bucket.
+    await pool.query(`UPDATE nft_generation_jobs SET export_bucket = $1 WHERE id = $2::uuid`, [bucket, jobId]);
 
     const sliceResumeFrom = Math.max(rStart, Math.min(Number(resumeFrom) || rStart, rEnd));
     exportMeta.rangeSlices.set(sliceKey, {
