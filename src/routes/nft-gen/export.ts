@@ -17,7 +17,7 @@ import {
 import {
   exportMeta, refreshCidMeta, previewMeta, zipRegistry,
 } from "./export-state";
-import { runExport, runPreview, runRefreshCids } from "./export-workers";
+import { runExport, runPreview, runRefreshCids, runExportSlice } from "./export-workers";
 import { saveTask, getTask, keepAlive } from "../../utils/taskProgress";
 
 const router = Router();
@@ -48,26 +48,24 @@ router.post("/", async (req, res, next) => {
 
     if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
     if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
-    if (exportMeta.running) {
-      // A "running" flag can outlive the process that set it — a serverless
-      // invocation killed by the platform's execution-time limit never runs
-      // its own cleanup, so this would otherwise stay stuck forever and
-      // block every export, for any collection, until the instance happens
-      // to recycle. Treat it as abandoned once it's gone quiet longer than
-      // any real progress tick should take (worker updates every batch —
-      // 90s of silence is well past that even for a slow batch).
+    {
+      // Scoped to THIS job, not global — the lock used to be a single
+      // app-wide boolean, which meant one artist exporting one collection
+      // blocked every other artist's export for every other collection at
+      // the same time. A stale entry (its serverless invocation killed
+      // outright by the platform's execution-time limit, never running its
+      // own cleanup) is treated as abandoned once it's gone quiet longer
+      // than any real progress tick should take.
       const STALE_MS = 90_000;
-      const runningEntry = [...exportMeta.jobs.entries()].find(([, j]) => j.status === 'running');
+      const runningEntry = [...exportMeta.jobs.entries()].find(([, j]) => j.status === 'running' && j.jobId === jobId);
       const isStale = !runningEntry || (Date.now() - runningEntry[1].lastUpdatedAt) > STALE_MS;
-      if (isStale) {
-        exportMeta.running = false;
-      } else {
+      if (runningEntry && !isStale) {
         // Include the running job's own id/progress so the caller can show
         // live progress instead of a dead-end "please wait" message — the
         // artist has no way to gauge how much longer to wait otherwise.
         const [runningExportId, runningJob] = runningEntry;
         res.status(409).json({
-          error: "An export is already running. Wait for it to complete before starting a new one.",
+          error: "An export is already running for this collection. Wait for it to complete before starting a new one.",
           exportId: runningExportId,
           progress: runningJob.progress,
           total: runningJob.total,
@@ -116,9 +114,8 @@ router.post("/", async (req, res, next) => {
 
     const startFrom = Math.max(0, Math.min(Number(resumeFrom) || 0, total));
     const exportId = randomUUID();
-    exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now() });
+    exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now(), jobId });
 
-    exportMeta.running = true;
     const exportJob = runExport(exportId, jobId, {
       bucket,
       format: String(format),
@@ -135,14 +132,111 @@ router.post("/", async (req, res, next) => {
       const msg = String(err?.message ?? err);
       if (s) { s.status = "error"; s.error = msg; }
       await saveTask(exportId, 'export', { status: 'error', phase: s?.phase ?? 'Failed', progress: s?.progress ?? startFrom, total, error: msg, meta: { jobId } });
-    }).finally(() => {
-      exportMeta.running = false;
     });
     keepAlive(exportJob);
     await saveTask(exportId, 'export', { status: 'running', phase: startFrom > 0 ? `Resuming from ${startFrom}…` : 'Starting…', progress: startFrom, total, meta: { jobId } });
 
     res.status(202).json({ exportId, total });
   } catch (e) { next(e); }
+});
+
+// ── POST /range — start one slice of a range-parallel export ──────────────────
+// The client fans a large collection out across several of these calls at
+// once (each covering a different [rangeStart, rangeEnd) edition range) to
+// get real wall-clock speedup — a single invocation's throughput is capped
+// by that instance's CPU allocation (see runExportSlice's compositeGate),
+// so running N slices concurrently on N separate instances is the only way
+// to meaningfully beat that ceiling. No ZIP build, no nft_records sync here
+// — those are collection-wide operations the client handles once, after
+// every slice reports done.
+router.post("/range", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.upload_ipfs");
+    const {
+      jobId, bucket,
+      format = "png", width: bodyWidth, height: bodyHeight,
+      collectionName = "", description = "", nameFormat = "",
+      rangeStart, rangeEnd, resumeFrom,
+    } = req.body ?? {};
+
+    if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
+    if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
+    if (rangeStart == null || rangeEnd == null) { res.status(422).json({ error: "rangeStart and rangeEnd are required." }); return; }
+    const rStart = Number(rangeStart);
+    const rEnd = Number(rangeEnd);
+    if (!(rEnd > rStart)) { res.status(422).json({ error: "rangeEnd must be greater than rangeStart." }); return; }
+
+    let width = bodyWidth;
+    let height = bodyHeight;
+    if (!width || !height) {
+      const { rows: dimRows } = await pool.query(
+        `SELECT c.format_width, c.format_height FROM nft_generation_jobs j
+         JOIN nft_collections c ON c.id = j.collection_id
+         WHERE j.id = $1::uuid`,
+        [jobId],
+      );
+      width = width || dimRows[0]?.format_width;
+      height = height || dimRows[0]?.format_height;
+    }
+    if (!width || Number(width) < 1) { res.status(422).json({ error: "width is required and must be >= 1 px." }); return; }
+    if (!height || Number(height) < 1) { res.status(422).json({ error: "height is required and must be >= 1 px." }); return; }
+    if (!hasLayerSource()) {
+      res.status(500).json({ error: "No layer source configured. Set LAYERS_BUCKET (Filebase bucket name)." });
+      return;
+    }
+
+    const sliceKey = `${jobId}:${rStart}-${rEnd}`;
+    const STALE_MS = 90_000;
+    const existing = exportMeta.rangeSlices.get(sliceKey);
+    const isStale = !existing || existing.status !== 'running' || (Date.now() - existing.lastUpdatedAt) > STALE_MS;
+    if (existing && !isStale) {
+      res.status(409).json({
+        error: "This slice is already running.",
+        exportId: sliceKey,
+        progress: existing.progress,
+        total: existing.total,
+        phase: existing.phase,
+      });
+      return;
+    }
+
+    const sliceResumeFrom = Math.max(rStart, Math.min(Number(resumeFrom) || rStart, rEnd));
+    exportMeta.rangeSlices.set(sliceKey, {
+      status: "running",
+      progress: sliceResumeFrom - rStart,
+      total: rEnd - rStart,
+      phase: sliceResumeFrom > rStart ? `Resuming from ${sliceResumeFrom}…` : "Starting…",
+      lastUpdatedAt: Date.now(),
+      jobId, rangeStart: rStart, rangeEnd: rEnd,
+    });
+
+    const sliceJob = runExportSlice(sliceKey, jobId, {
+      bucket,
+      format: String(format),
+      width: Number(width),
+      height: Number(height),
+      collectionName: String(collectionName),
+      description: String(description),
+      nameFormat: String(nameFormat),
+      rangeStart: rStart,
+      rangeEnd: rEnd,
+      resumeFrom: sliceResumeFrom,
+    }).catch(async err => {
+      const s = exportMeta.rangeSlices.get(sliceKey);
+      const msg = String(err?.message ?? err);
+      if (s) { s.status = "error"; s.error = msg; }
+    });
+    keepAlive(sliceJob);
+
+    res.status(202).json({ exportId: sliceKey, total: rEnd - rStart });
+  } catch (e) { next(e); }
+});
+
+// ── GET /range/:sliceKey — poll one slice's status ─────────────────────────────
+router.get("/range/:sliceKey", async (req, res) => {
+  const state = exportMeta.rangeSlices.get(req.params.sliceKey);
+  if (!state) { res.status(404).json({ error: "Export slice not found." }); return; }
+  res.json(state);
 });
 
 // ── POST /preview — start server-side image validation/preview ────────────────
@@ -460,21 +554,25 @@ router.post("/refresh-cids", async (req, res, next) => {
     const { bucket, format = "png", jobId, syncToRecords = false } = req.body ?? {};
     if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
     if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
-    if (refreshCidMeta.running) {
-      res.status(409).json({ error: "A CID refresh is already running." });
-      return;
+    {
+      // Scoped to this job, not global — same fix as the export lock above.
+      const STALE_MS = 90_000;
+      const runningEntry = [...refreshCidMeta.jobs.entries()].find(([, j]) => j.status === 'running' && j.jobId === jobId);
+      const isStale = !runningEntry || (Date.now() - (runningEntry[1].lastUpdatedAt ?? 0)) > STALE_MS;
+      if (runningEntry && !isStale) {
+        res.status(409).json({ error: "A CID refresh is already running for this collection." });
+        return;
+      }
     }
     const refreshId = randomUUID();
-    refreshCidMeta.jobs.set(refreshId, { status: "running", progress: 0, total: 0, resolved: 0, skipped: 0, phase: "Listing images…" });
-    refreshCidMeta.running = true;
+    refreshCidMeta.jobs.set(refreshId, { status: "running", progress: 0, total: 0, resolved: 0, skipped: 0, phase: "Listing images…", jobId, lastUpdatedAt: Date.now() });
     const refreshJob = runRefreshCids(refreshId, bucket, String(format), String(jobId), Boolean(syncToRecords))
       .catch(async err => {
         const s = refreshCidMeta.jobs.get(refreshId);
         const msg = String(err?.message ?? err);
         if (s) { s.status = "error"; s.error = msg; }
         await saveTask(refreshId, 'refresh_cids', { status: 'error', phase: s?.phase ?? 'Failed', progress: s?.progress ?? 0, total: s?.total ?? 0, error: msg, meta: {} });
-      })
-      .finally(() => { refreshCidMeta.running = false; });
+      });
     keepAlive(refreshJob);
     await saveTask(refreshId, 'refresh_cids', { status: 'running', phase: 'Listing images…', progress: 0, total: 0, meta: {} });
     res.status(202).json({ refreshId });

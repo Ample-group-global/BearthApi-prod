@@ -11,6 +11,13 @@ export interface ExportState {
   // flag would stay stuck forever and permanently block every future export
   // attempt for the whole app, not just this job.
   lastUpdatedAt: number;
+  // Present when this state is one slice of a range-parallel export (see
+  // export.ts's fan-out path) — identifies which edition range this
+  // specific invocation owns, so concurrent slices for the same job don't
+  // collide with each other's "already running" lock.
+  jobId?: string;
+  rangeStart?: number;
+  rangeEnd?: number;
 }
 
 export interface RefreshCidState {
@@ -21,6 +28,8 @@ export interface RefreshCidState {
   skipped: number;
   phase: string;
   error?: string;
+  jobId?: string;
+  lastUpdatedAt?: number;
 }
 
 export interface PreviewState {
@@ -34,12 +43,16 @@ export interface PreviewState {
 }
 
 export const exportMeta = {
-  running: false,
   jobs: new Map<string, ExportState>(),
+  // Separate from `jobs`/`running` (the single-shot export lock) entirely —
+  // the range-parallel fan-out path (export.ts's /range route) tracks each
+  // concurrent slice here, keyed by `${jobId}:${rangeStart}-${rangeEnd}`,
+  // so N slices for the same job never collide with each other's lock, and
+  // the existing single-shot flow's locking is untouched.
+  rangeSlices: new Map<string, ExportState>(),
 };
 
 export const refreshCidMeta = {
-  running: false,
   jobs: new Map<string, RefreshCidState>(),
 };
 
