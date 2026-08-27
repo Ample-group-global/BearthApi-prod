@@ -29,17 +29,31 @@ async function cleanupStaleLayerFiles(bucket: string, layer: string, keptKeys: S
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+// "Start a new collection" calls this to clean up an abandoned, not-yet-saved
+// upload attempt. bearth-layers holds EVERY artist's/collection's layers side
+// by side (each upload gets its own random session-prefix folder so real
+// uploads never collide on filenames) -- but this route used to delete the
+// ENTIRE bucket with no scoping at all, so any artist resetting their own
+// working session silently destroyed every other artist's layer files,
+// including already-fully-generated collections'. Now requires the caller's
+// own session prefix and only ever touches objects under it.
 router.post("/clear-bucket", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
+    const rawPrefix = (req.body?.prefix ?? "") as string;
+    const safePrefix = rawPrefix.trim().replace(/[^a-zA-Z0-9\-_]/g, "");
+    if (!safePrefix) { res.status(422).json({ error: "prefix is required." }); return; }
+
     const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
     const s3 = getS3Client();
     let deleted = 0;
     let continuationToken: string | undefined;
+    const prefix = `${safePrefix}/`;
 
     do {
       const list = await s3.send(new ListObjectsV2Command({
         Bucket: bucket,
+        Prefix: prefix,
         MaxKeys: 1000,
         ContinuationToken: continuationToken,
       }));
@@ -50,7 +64,7 @@ router.post("/clear-bucket", async (req, res, next) => {
       continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
     } while (continuationToken);
 
-    res.json({ ok: true, bucket, deleted });
+    res.json({ ok: true, bucket, prefix, deleted });
   } catch (e) { next(e); }
 });
 
