@@ -515,23 +515,33 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     throw new Error("Required lookup values (nft_stage:genesis, delivery_status:pending) not found");
   }
 
+  // Traits live in nft_item_traits, not on nft_generated_items.metadata_json —
+  // that column only ever stores the rarity summary ({rank, tier, score}),
+  // never an "attributes" array. Reading meta.attributes here always found
+  // nothing and silently wrote an empty traits object for every single row.
   const { rows: items } = jobId
     ? await pool.query(
-        `SELECT edition_number, ipfs_image_cid, ipfs_metadata_cid, metadata_json
-         FROM nft_generated_items
-         WHERE job_id = $1::uuid
-           AND ipfs_image_cid    IS NOT NULL
-           AND ipfs_metadata_cid IS NOT NULL
-         ORDER BY edition_number ASC`,
+        `SELECT gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
+           COALESCE(jsonb_object_agg(nit.trait_type, nit.trait_value) FILTER (WHERE nit.trait_type IS NOT NULL), '{}'::jsonb) AS traits
+         FROM nft_generated_items gi
+         LEFT JOIN nft_item_traits nit ON nit.item_id = gi.id
+         WHERE gi.job_id = $1::uuid
+           AND gi.ipfs_image_cid    IS NOT NULL
+           AND gi.ipfs_metadata_cid IS NOT NULL
+         GROUP BY gi.id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json
+         ORDER BY gi.edition_number ASC`,
         [jobId],
       )
     : await pool.query(
-        `SELECT DISTINCT ON (edition_number)
-           edition_number, ipfs_image_cid, ipfs_metadata_cid, metadata_json
-         FROM nft_generated_items
-         WHERE ipfs_image_cid    IS NOT NULL
-           AND ipfs_metadata_cid IS NOT NULL
-         ORDER BY edition_number ASC, created_at DESC`,
+        `SELECT DISTINCT ON (gi.edition_number)
+           gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
+           COALESCE(jsonb_object_agg(nit.trait_type, nit.trait_value) FILTER (WHERE nit.trait_type IS NOT NULL), '{}'::jsonb) AS traits
+         FROM nft_generated_items gi
+         LEFT JOIN nft_item_traits nit ON nit.item_id = gi.id
+         WHERE gi.ipfs_image_cid    IS NOT NULL
+           AND gi.ipfs_metadata_cid IS NOT NULL
+         GROUP BY gi.id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json, gi.created_at
+         ORDER BY gi.edition_number ASC, gi.created_at DESC`,
       );
 
   if (!items.length) return 0;
@@ -540,12 +550,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     const meta = typeof item.metadata_json === 'string'
       ? JSON.parse(item.metadata_json) as Record<string, unknown>
       : (item.metadata_json as Record<string, unknown>) ?? {};
-    const traits: Record<string, string> = {};
-    if (Array.isArray(meta.attributes)) {
-      for (const attr of meta.attributes as Array<{ trait_type?: string; value?: unknown }>) {
-        if (attr.trait_type && attr.value !== undefined) traits[attr.trait_type] = String(attr.value);
-      }
-    }
+    const traits: Record<string, string> = item.traits ?? {};
     return {
       serial_number: `#${item.edition_number}`,
       stage_id: genesisStageId,

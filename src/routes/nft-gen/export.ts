@@ -246,9 +246,15 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
       const s3 = getS3Client();
       try {
         let cursor = 1;
+        let cursorEnd = 0;
+        // Bounded to cursorEnd (the current batch's end), not total — a
+        // worker checking `cursor <= total` would keep pulling forward
+        // through the ENTIRE 9999-item collection on the very first batch
+        // iteration, so nothing ever reached zip.addFile() until virtually
+        // everything had already been fetched (the "0 B received" bug).
         async function worker() {
           const out: Array<{ n: number; imgBuf: Buffer; metaBuf: Buffer }> = [];
-          while (cursor <= total) {
+          while (cursor <= cursorEnd) {
             const n = cursor++;
             const [imgRes, metaRes] = await Promise.all([
               s3.send(new GetObjectCommand({ Bucket: bucket, Key: `images/${n}.${ext}` })),
@@ -265,6 +271,7 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
         for (let offset = 0; offset < total; offset += DOWNLOAD_BATCH) {
           const batchEnd = Math.min(offset + DOWNLOAD_BATCH, total);
           cursor = offset + 1;
+          cursorEnd = batchEnd;
           const batchTotal = batchEnd - offset;
           const results = (await Promise.all(
             Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, batchTotal) }, worker),
