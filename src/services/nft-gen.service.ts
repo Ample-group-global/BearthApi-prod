@@ -515,25 +515,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     throw new Error("Required lookup values (nft_stage:genesis, delivery_status:pending) not found");
   }
 
-  // Every bucket used for export is expected to carry the same standard
-  // blindbox key (AssetBlindbox/bearthblindboximage1.png) — look it up in
-  // whichever bucket THIS job actually exported to (export.ts records that
-  // on nft_generation_jobs.export_bucket at export time), not one hardcoded
-  // bucket name, so this keeps working the same way regardless of which
-  // bucket an artist uses or how that changes over time. No jobId, or a job
-  // that hasn't been exported yet, means there's no bucket to check yet —
-  // blind_box_uri just stays null; it never blocks the rest of the sync.
-  let blindboxBucket: string | undefined;
-  if (jobId) {
-    const { rows: bucketRows } = await pool.query(
-      `SELECT export_bucket FROM nft_generation_jobs WHERE id = $1::uuid`, [jobId],
-    );
-    blindboxBucket = bucketRows[0]?.export_bucket ?? undefined;
-  }
-  const blindboxCid = blindboxBucket
-    ? await filebaseHead(blindboxBucket, "AssetBlindbox/bearthblindboximage1.png")
-    : null;
-  const blindBoxUri = blindboxCid ? `${FILEBASE_GATEWAY}/${blindboxCid}` : null;
+  const blindBoxUri = await getBlindboxUri();
 
   // Traits live in nft_item_traits, not on nft_generated_items.metadata_json —
   // that column only ever stores the rarity summary ({rank, tier, score}),
@@ -652,6 +634,21 @@ async function filebaseGetJson(
   } catch { return { cid: null, body: {} }; }
 }
 
+// The blindbox placeholder is shared, collection-independent infra — not
+// artist data — so it always lives in one fixed shared bucket, never a
+// per-collection export bucket. Gateway URLs are content-addressed by CID,
+// so which bucket pinned it never matters to whatever reads blind_box_uri
+// downstream — only this lookup needs to agree on where to find it, and
+// every caller must resolve it exactly the same way. Config-driven, no
+// hardcoded bucket literal; a genuine miss just means no blindbox URL this
+// sync, never a blocked sync.
+async function getBlindboxUri(): Promise<string | null> {
+  const bucket = process.env.FILEBASE_ASSETS_BUCKET || process.env.FILEBASE_LAYERS_BUCKET;
+  if (!bucket) return null;
+  const cid = await filebaseHead(bucket, "AssetBlindbox/bearthblindboximage1.png");
+  return cid ? `${FILEBASE_GATEWAY}/${cid}` : null;
+}
+
 function parseFilebaseTraits(json: Record<string, unknown>): Record<string, unknown> {
   const raw = (json.attributes ?? json.traits ?? {}) as unknown;
   if (Array.isArray(raw)) {
@@ -672,8 +669,7 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
   const pendingStatusId = lv.find(r => r.code === "pending")?.id as string | undefined;
   if (!genesisStageId || !pendingStatusId) throw new Error("Required lookup values not found");
 
-  const bbCid = await filebaseHead(bucket, "AssetBlindbox/bearthblindboximage1.png");
-  const blindUri = bbCid ? `${FILEBASE_GATEWAY}/${bbCid}` : null;
+  const blindUri = await getBlindboxUri();
 
   const imageKeys: string[] = [];
   let listToken: string | undefined;

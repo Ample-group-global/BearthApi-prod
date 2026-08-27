@@ -74,6 +74,26 @@ router.post("/", async (req, res, next) => {
         return;
       }
     }
+    {
+      // Bucket-level lock, separate from the per-job lock above. Image and
+      // metadata keys are bucket-root (images/{edition}.png), not namespaced
+      // by job or collection — two different jobs racing the same bucket at
+      // once would silently overwrite each other's files. Sibling slices of
+      // THIS SAME job are excluded (they're expected to share the bucket);
+      // only a genuinely different job is a conflict.
+      const STALE_MS = 90_000;
+      const now = Date.now();
+      const isLive = (j: { status: string; jobId?: string; bucket?: string; lastUpdatedAt: number }) =>
+        j.status === 'running' && j.jobId !== jobId && j.bucket === bucket && (now - j.lastUpdatedAt) <= STALE_MS;
+      const conflict = [...exportMeta.jobs.values()].find(isLive) ?? [...exportMeta.rangeSlices.values()].find(isLive);
+      if (conflict) {
+        res.status(409).json({
+          error: `Bucket "${bucket}" is already being exported to by another collection (job ${conflict.jobId}). Pick a different bucket, or wait for that export to finish.`,
+          conflictingJobId: conflict.jobId,
+        });
+        return;
+      }
+    }
 
     // width/height are optional — most callers (e.g. Collection Sync Status)
     // never had a reason to know them, since the collection already stores
@@ -114,7 +134,7 @@ router.post("/", async (req, res, next) => {
 
     const startFrom = Math.max(0, Math.min(Number(resumeFrom) || 0, total));
     const exportId = randomUUID();
-    exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now(), jobId });
+    exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now(), jobId, bucket });
 
     // Remembers which bucket this job's artwork actually lives in — every
     // sync path (nft_records, blindbox lookup) reads this back instead of
@@ -205,6 +225,22 @@ router.post("/range", async (req, res, next) => {
       });
       return;
     }
+    {
+      // Same bucket-level lock as POST / — sibling slices of THIS job are
+      // excluded (they share the bucket by design); a different job's
+      // slices or single-shot export writing to the same bucket is not.
+      const now = Date.now();
+      const isLive = (j: { status: string; jobId?: string; bucket?: string; lastUpdatedAt: number }) =>
+        j.status === 'running' && j.jobId !== jobId && j.bucket === bucket && (now - j.lastUpdatedAt) <= STALE_MS;
+      const conflict = [...exportMeta.jobs.values()].find(isLive) ?? [...exportMeta.rangeSlices.values()].find(isLive);
+      if (conflict) {
+        res.status(409).json({
+          error: `Bucket "${bucket}" is already being exported to by another collection (job ${conflict.jobId}). Pick a different bucket, or wait for that export to finish.`,
+          conflictingJobId: conflict.jobId,
+        });
+        return;
+      }
+    }
 
     // Same bucket bookkeeping as the single-shot POST / — whichever slice
     // lands first records it, redundant but harmless for sibling slices of
@@ -218,7 +254,7 @@ router.post("/range", async (req, res, next) => {
       total: rEnd - rStart,
       phase: sliceResumeFrom > rStart ? `Resuming from ${sliceResumeFrom}…` : "Starting…",
       lastUpdatedAt: Date.now(),
-      jobId, rangeStart: rStart, rangeEnd: rEnd,
+      jobId, rangeStart: rStart, rangeEnd: rEnd, bucket,
     });
 
     const sliceJob = runExportSlice(sliceKey, jobId, {

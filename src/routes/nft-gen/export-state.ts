@@ -18,6 +18,13 @@ export interface ExportState {
   jobId?: string;
   rangeStart?: number;
   rangeEnd?: number;
+  // Which Filebase bucket this export is writing to — image/metadata keys
+  // are bucket-root (images/{edition}.png), not namespaced by job or
+  // collection, so two different jobs racing the same bucket at once would
+  // silently overwrite each other's files. Tracked here so a new export can
+  // check "is any OTHER job already writing to this same bucket" and refuse
+  // to start rather than corrupt it.
+  bucket?: string;
 }
 
 export interface RefreshCidState {
