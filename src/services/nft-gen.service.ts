@@ -521,7 +521,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
   // nothing and silently wrote an empty traits object for every single row.
   const { rows: items } = jobId
     ? await pool.query(
-        `SELECT gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
+        `SELECT gi.id AS generated_item_id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
            COALESCE(jsonb_object_agg(nit.trait_type, nit.trait_value) FILTER (WHERE nit.trait_type IS NOT NULL), '{}'::jsonb) AS traits
          FROM nft_generated_items gi
          LEFT JOIN nft_item_traits nit ON nit.item_id = gi.id
@@ -534,7 +534,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
       )
     : await pool.query(
         `SELECT DISTINCT ON (gi.edition_number)
-           gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
+           gi.id AS generated_item_id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
            COALESCE(jsonb_object_agg(nit.trait_type, nit.trait_value) FILTER (WHERE nit.trait_type IS NOT NULL), '{}'::jsonb) AS traits
          FROM nft_generated_items gi
          LEFT JOIN nft_item_traits nit ON nit.item_id = gi.id
@@ -563,6 +563,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
       serial_number: `#${item.edition_number}`,
       stage_id: genesisStageId,
       delivery_status_id: pendingStatusId,
+      generated_item_id: item.generated_item_id,
       image_ipfs_hash: item.ipfs_image_cid,
       metadata_ipfs_hash: item.ipfs_metadata_cid,
       metadata_uri: `ipfs://${item.ipfs_metadata_cid}`,
@@ -574,11 +575,12 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
   });
 
   const { rowCount } = await pool.query(
-    `INSERT INTO nft_records (serial_number, stage_id, delivery_status_id, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, traits, rarity_score, rarity_rank, rarity_tier)
+    `INSERT INTO nft_records (serial_number, stage_id, delivery_status_id, generated_item_id, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, traits, rarity_score, rarity_rank, rarity_tier)
      SELECT
        x.serial_number,
        x.stage_id::uuid,
        x.delivery_status_id::uuid,
+       x.generated_item_id::uuid,
        x.image_ipfs_hash,
        x.metadata_ipfs_hash,
        x.metadata_uri,
@@ -587,7 +589,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
        x.rarity_rank,
        x.rarity_tier
      FROM json_to_recordset($1::json) AS x(
-       serial_number text, stage_id text, delivery_status_id text,
+       serial_number text, stage_id text, delivery_status_id text, generated_item_id text,
        image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text, traits jsonb,
        rarity_score numeric, rarity_rank int, rarity_tier text
      )
@@ -595,6 +597,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
        image_ipfs_hash    = EXCLUDED.image_ipfs_hash,
        metadata_ipfs_hash = EXCLUDED.metadata_ipfs_hash,
        metadata_uri       = EXCLUDED.metadata_uri,
+       generated_item_id  = COALESCE(EXCLUDED.generated_item_id, nft_records.generated_item_id),
        traits             = EXCLUDED.traits,
        rarity_score       = COALESCE(EXCLUDED.rarity_score, nft_records.rarity_score),
        rarity_rank        = COALESCE(EXCLUDED.rarity_rank,  nft_records.rarity_rank),
