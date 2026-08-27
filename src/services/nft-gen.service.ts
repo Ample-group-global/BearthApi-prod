@@ -661,17 +661,21 @@ async function filebaseGetJson(
 
 // The blindbox placeholder is shared, collection-independent infra — not
 // artist data — so it always lives in one fixed shared bucket, never a
-// per-collection export bucket. Gateway URLs are content-addressed by CID,
-// so which bucket pinned it never matters to whatever reads blind_box_uri
-// downstream — only this lookup needs to agree on where to find it, and
-// every caller must resolve it exactly the same way. Config-driven, no
-// hardcoded bucket literal; a genuine miss just means no blindbox URL this
-// sync, never a blocked sync.
+// per-collection export bucket. This points at the real metadata.json for
+// the unrevealed state (name/description/image/animation_url/attributes),
+// not the raw image directly -- same metadata_uri (ipfs://{cid}) pattern
+// every other NFT's metadata already uses, and the only way a marketplace
+// ever sees the blindbox's video (animation_url), not just its thumbnail.
+// Which bucket pinned it never matters to whatever reads blind_box_uri
+// downstream since IPFS is content-addressed -- only this lookup needs to
+// agree on where to find it, and every caller must resolve it exactly the
+// same way. Config-driven, no hardcoded bucket literal; a genuine miss just
+// means no blindbox URL this sync, never a blocked sync.
 async function getBlindboxUri(): Promise<string | null> {
   const bucket = process.env.FILEBASE_ASSETS_BUCKET || process.env.FILEBASE_LAYERS_BUCKET;
   if (!bucket) return null;
-  const cid = await filebaseHead(bucket, "AssetBlindbox/bearthblindboximage1.png");
-  return cid ? `${FILEBASE_GATEWAY}/${cid}` : null;
+  const { cid } = await filebaseGetJson(bucket, "AssetBlindbox/blindbox.json");
+  return cid ? `ipfs://${cid}` : null;
 }
 
 function parseFilebaseTraits(json: Record<string, unknown>): Record<string, unknown> {
