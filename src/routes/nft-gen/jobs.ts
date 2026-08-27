@@ -42,7 +42,7 @@ router.get("/", async (req, res, next) => {
     let where = "collection_id = $1::uuid";
     if (status) { params.push(status); where += ` AND status = $${params.length}`; }
     const { rows } = await pool.query(
-      `SELECT id, collection_id, edition_size, status, created_at, completed_at
+      `SELECT id, collection_id, edition_size, status, created_at, completed_at, export_bucket
        FROM nft_generation_jobs WHERE ${where} ORDER BY created_at DESC LIMIT 10`,
       params,
     );
