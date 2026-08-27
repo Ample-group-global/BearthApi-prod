@@ -518,20 +518,21 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
   // Every bucket used for export is expected to carry the same standard
   // blindbox key (AssetBlindbox/bearthblindboximage1.png) — look it up in
   // whichever bucket THIS job actually exported to (export.ts records that
-  // on nft_generation_jobs.export_bucket at export time), so a different
-  // artist exporting to a different bucket is supported the same way,
-  // instead of assuming everyone uses one hardcoded bucket. Falls back to
-  // the env default only for jobs exported before export_bucket existed, or
-  // when no jobId is given (the bucket-wide legacy path below). A miss here
-  // just means blind_box_uri stays null for this sync; it never blocks sync.
-  let blindboxBucket = process.env.FILEBASE_BUCKET || "bearth-nft-it";
+  // on nft_generation_jobs.export_bucket at export time), not one hardcoded
+  // bucket name, so this keeps working the same way regardless of which
+  // bucket an artist uses or how that changes over time. No jobId, or a job
+  // that hasn't been exported yet, means there's no bucket to check yet —
+  // blind_box_uri just stays null; it never blocks the rest of the sync.
+  let blindboxBucket: string | undefined;
   if (jobId) {
     const { rows: bucketRows } = await pool.query(
       `SELECT export_bucket FROM nft_generation_jobs WHERE id = $1::uuid`, [jobId],
     );
-    if (bucketRows[0]?.export_bucket) blindboxBucket = bucketRows[0].export_bucket;
+    blindboxBucket = bucketRows[0]?.export_bucket ?? undefined;
   }
-  const blindboxCid = await filebaseHead(blindboxBucket, "AssetBlindbox/bearthblindboximage1.png");
+  const blindboxCid = blindboxBucket
+    ? await filebaseHead(blindboxBucket, "AssetBlindbox/bearthblindboximage1.png")
+    : null;
   const blindBoxUri = blindboxCid ? `${FILEBASE_GATEWAY}/${blindboxCid}` : null;
 
   // Traits live in nft_item_traits, not on nft_generated_items.metadata_json —

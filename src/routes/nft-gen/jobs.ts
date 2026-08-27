@@ -8,7 +8,13 @@ const router = Router();
 router.post("/sync-from-filebase", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.generate");
-    const bucket = (req.body?.bucket as string) || process.env.FILEBASE_BUCKET || "bearth-nft-it";
+    // No hardcoded bucket fallback here on purpose — this route deletes and
+    // rebuilds the entire nft_records table from whatever bucket it's given,
+    // so silently guessing the wrong one is exactly how a real incident
+    // happened before (an unrelated bucket's data got wiped). The caller
+    // must say which bucket explicitly, every time.
+    const bucket = (req.body?.bucket as string) || "";
+    if (!bucket.trim()) { res.status(422).json({ error: "bucket is required." }); return; }
     await pool.query("DELETE FROM nft_records");
     const result = await syncFromFilebaseBucket(bucket);
     res.json({ bucket, ...result });
