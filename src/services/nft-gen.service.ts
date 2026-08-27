@@ -550,7 +550,15 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     const meta = typeof item.metadata_json === 'string'
       ? JSON.parse(item.metadata_json) as Record<string, unknown>
       : (item.metadata_json as Record<string, unknown>) ?? {};
-    const traits: Record<string, string> = item.traits ?? {};
+    // Mirror the real Filebase metadata.json's attributes array, which
+    // includes Rarity Score/Rank/Tier as regular trait_type/value entries
+    // alongside the physical traits — not just the separate typed columns
+    // below (those exist for SQL querying/filtering; this keeps `traits`
+    // itself a complete match of what's actually on IPFS).
+    const traits: Record<string, string> = { ...(item.traits ?? {}) };
+    if (meta.score != null) traits['Rarity Score'] = Number(meta.score).toFixed(2);
+    if (meta.rank != null) traits['Rarity Rank'] = `#${meta.rank}`;
+    if (meta.tier != null) traits['Rarity Tier'] = String(meta.tier);
     return {
       serial_number: `#${item.edition_number}`,
       stage_id: genesisStageId,
