@@ -12,7 +12,7 @@ import { getS3Client } from "../../clients/s3";
 import { syncGeneratedItemsToNftRecords } from "../../services/nft-gen.service";
 import { ZipStream } from "../../utils/zipStream";
 import {
-  hasLayerSource, makeLayerFetcher, fetchEditionRows, applyNameFormat,
+  hasLayerSource, makeLayerFetcher, fetchEditionRows, applyNameFormat, streamToBuffer,
 } from "./export-helpers";
 import {
   exportMeta, refreshCidMeta, previewMeta, zipRegistry,
@@ -221,11 +221,7 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
     const collectionName = String(req.query.collectionName ?? "");
     const description = String(req.query.description ?? "");
     const nameFormat = String(req.query.nameFormat ?? "");
-
-    if (!hasLayerSource()) {
-      res.status(500).json({ error: "No layer source configured. Set LAYERS_BUCKET (Filebase bucket name)." });
-      return;
-    }
+    const bucket = String(req.query.bucket ?? "").trim();
 
     const { rows: countRows } = await pool.query(
       "SELECT COUNT(*) AS cnt FROM nft_generated_items WHERE job_id = $1::uuid",
@@ -233,13 +229,65 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
     );
     const total = Number(countRows[0]?.cnt ?? 0);
     if (total === 0) { res.status(422).json({ error: "No generated items for this job." }); return; }
-    console.log(`[download-zip] job ${jobId}: ${total} NFTs, width=${width} height=${height} — starting ZIP64 stream`);
 
     const safeName = (collectionName || "bearth-nft-collection").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
     res.setHeader("Content-Type", "application/zip");
     res.setHeader("Content-Disposition", `attachment; filename="${safeName}.zip"`);
 
     const zip = new ZipStream(res);
+
+    // Fast path: this job was already exported to Filebase — every image
+    // and metadata file is already sitting there, fully composited. Read
+    // them directly (2 GetObjects/edition) instead of recompositing from
+    // raw layers (~8 layer-source fetches + a Sharp composite per edition,
+    // work this job already paid for once during the real export).
+    if (bucket) {
+      console.log(`[download-zip] job ${jobId}: ${total} NFTs — fast path from bucket "${bucket}"`);
+      const s3 = getS3Client();
+      try {
+        let cursor = 1;
+        async function worker() {
+          const out: Array<{ n: number; imgBuf: Buffer; metaBuf: Buffer }> = [];
+          while (cursor <= total) {
+            const n = cursor++;
+            const [imgRes, metaRes] = await Promise.all([
+              s3.send(new GetObjectCommand({ Bucket: bucket, Key: `images/${n}.${ext}` })),
+              s3.send(new GetObjectCommand({ Bucket: bucket, Key: `metadata/${n}.json` })),
+            ]);
+            const [imgBuf, metaBuf] = await Promise.all([
+              streamToBuffer(imgRes.Body),
+              streamToBuffer(metaRes.Body),
+            ]);
+            out.push({ n, imgBuf, metaBuf });
+          }
+          return out;
+        }
+        for (let offset = 0; offset < total; offset += DOWNLOAD_BATCH) {
+          const batchEnd = Math.min(offset + DOWNLOAD_BATCH, total);
+          cursor = offset + 1;
+          const batchTotal = batchEnd - offset;
+          const results = (await Promise.all(
+            Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, batchTotal) }, worker),
+          )).flat().sort((a, b) => a.n - b.n);
+          for (const r of results) {
+            await zip.addFile(`images/${r.n}.${ext}`, r.imgBuf);
+            await zip.addFile(`metadata/${r.n}.json`, r.metaBuf);
+          }
+        }
+        await zip.finish();
+      } catch (streamErr) {
+        console.error(`[download-zip] fast path failed mid-stream for job ${jobId}:`, streamErr);
+        res.destroy(streamErr instanceof Error ? streamErr : new Error(String(streamErr)));
+      }
+      return;
+    }
+
+    if (!hasLayerSource()) {
+      res.status(500).json({ error: "No layer source configured. Set LAYERS_BUCKET (Filebase bucket name)." });
+      return;
+    }
+    console.log(`[download-zip] job ${jobId}: ${total} NFTs, width=${width} height=${height} — starting ZIP64 stream (recompositing, no bucket given)`);
+
     const fetchLayerBuf = makeLayerFetcher();
 
     try {
