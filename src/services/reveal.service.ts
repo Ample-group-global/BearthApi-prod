@@ -276,18 +276,32 @@ export async function _syncRevealedMetadata(waveNum: number): Promise<void> {
   }
   console.log(`[reveal] Wave ${waveNum}: artwork sync complete — ${synced} updated, ${missing} missing`);
 
+  // Same 1%/5%/15% percentage thresholds generate.ts's computeRarity() uses
+  // at generation time (the canonical source) — this was previously a fixed
+  // rank cutoff (<=100/500/1500) with no relationship to the actual
+  // collection size, so any collection whose supply isn't close to ~10,000
+  // got every item mis-tiered here (e.g. a 50-item collection: rank<=100 is
+  // always true, so every revealed item became "legendary"). nft_records
+  // holds exactly one collection's rows at a time, so its own row count is
+  // that collection's real supply.
+  const { rows: supplyRows } = await pool.query(`SELECT COUNT(*) AS total FROM nft_records`);
+  const totalSupply = Number(supplyRows[0]?.total ?? 0);
+  const legendaryMax = Math.ceil(totalSupply * 0.01);
+  const epicMax = Math.ceil(totalSupply * 0.05);
+  const rareMax = Math.ceil(totalSupply * 0.15);
+
   await pool.query(
     `UPDATE nft_records SET rarity_tier = CASE
-       WHEN rarity_rank BETWEEN 1   AND 100  THEN 'legendary'
-       WHEN rarity_rank BETWEEN 101 AND 500  THEN 'epic'
-       WHEN rarity_rank BETWEEN 501 AND 1500 THEN 'rare'
-       WHEN rarity_rank > 1500               THEN 'common'
+       WHEN rarity_rank <= $2 THEN 'legendary'
+       WHEN rarity_rank <= $3 THEN 'epic'
+       WHEN rarity_rank <= $4 THEN 'rare'
+       ELSE 'common'
      END
      WHERE on_chain_wave_num = $1
        AND token_id IS NOT NULL
        AND rarity_rank IS NOT NULL
        AND rarity_tier IS NULL`,
-    [waveNum],
+    [waveNum, legendaryMax, epicMax, rareMax],
   );
 }
 

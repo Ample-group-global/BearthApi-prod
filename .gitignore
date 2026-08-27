@@ -58,3 +58,7 @@ BearthApi-backup-2026-07-27/
 # Test files (not committed to repo)
 tests/
 .env*
+
+# Scratch/debug scripts written during live testing sessions
+_tmp_*.js
+_tmp_*.json

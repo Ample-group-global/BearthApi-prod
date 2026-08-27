@@ -923,8 +923,25 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (continuationToken);
 
-  state.total = imageKeys.length;
-  state.phase = `Found ${imageKeys.length} images — refreshing CIDs…`;
+  // A bucket can legitimately hold more than one job's files over time —
+  // the export bucket-lock only stops two jobs writing to it AT ONCE, not
+  // a different job reusing it later. Without this filter, listing
+  // "images/" bucket-wide and writing whatever CID each key resolves to
+  // onto THIS jobId's rows would silently attach another job's real
+  // artwork CID to this job's edition numbers wherever they overlap.
+  const { rows: ownEditionRows } = jobId
+    ? await pool.query(`SELECT edition_number FROM nft_generated_items WHERE job_id = $1`, [jobId])
+    : { rows: [] as { edition_number: number }[] };
+  const ownEditions = new Set(ownEditionRows.map(r => r.edition_number));
+  const scopedImageKeys = jobId
+    ? imageKeys.filter(k => {
+        const n = parseInt(k.replace(/^images\//, "").replace(/\.\w+$/, ""), 10);
+        return !isNaN(n) && ownEditions.has(n);
+      })
+    : imageKeys;
+
+  state.total = scopedImageKeys.length;
+  state.phase = `Found ${scopedImageKeys.length} images — refreshing CIDs…`;
 
   // Editions whose DB row already has a CID — the export's own Phase 2 DB
   // flush only happens once per 500-item batch, so an invocation killed
@@ -942,8 +959,8 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
   const resolvedItems: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string; imagePath: string }> = [];
 
   async function processOne() {
-    while (cursor < imageKeys.length) {
-      const imgKey = imageKeys[cursor++];
+    while (cursor < scopedImageKeys.length) {
+      const imgKey = scopedImageKeys[cursor++];
       // Extract edition number from "images/123.png" → 123
       const basename = imgKey.replace(/^images\//, "").replace(/\.\w+$/, "");
       const editionNum = parseInt(basename, 10);
