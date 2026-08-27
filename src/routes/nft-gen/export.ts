@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, HeadObjectCommand, ListObjectsV2Command } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 import path from "path";
@@ -245,6 +245,24 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
       console.log(`[download-zip] job ${jobId}: ${total} NFTs — fast path from bucket "${bucket}"`);
       const s3 = getS3Client();
       try {
+        // Sum real object sizes via ListObjectsV2 (cheap — a handful of
+        // paginated calls for ~20000 objects) so the client can show a real
+        // "X of Y" progress bar instead of just "X received…". Exposed as a
+        // custom header, not Content-Length — the actual ZIP stream is a
+        // few bytes larger per entry (local file headers, central
+        // directory), and Content-Length must match the real byte count
+        // exactly or the browser treats the download as truncated.
+        let estimatedBytes = 0;
+        for (const prefix of ["images/", "metadata/"]) {
+          let token: string | undefined;
+          do {
+            const resp = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ContinuationToken: token }));
+            for (const obj of resp.Contents ?? []) estimatedBytes += obj.Size ?? 0;
+            token = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+          } while (token);
+        }
+        if (estimatedBytes > 0) res.setHeader("X-Estimated-Zip-Bytes", String(estimatedBytes));
+
         let cursor = 1;
         let cursorEnd = 0;
         // Bounded to cursorEnd (the current batch's end), not total — a
