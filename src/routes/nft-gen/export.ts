@@ -337,8 +337,8 @@ router.post("/sync-records", async (req, res, next) => {
       [jobId],
     );
     if (!rows.length) { res.status(404).json({ error: "Job not found." }); return; }
-    if (rows[0].status !== "completed") {
-      res.status(409).json({ error: `Job status is '${rows[0].status}' — must be 'completed' before syncing to NFT Records.` });
+    if (rows[0].status !== "complete") {
+      res.status(409).json({ error: `Job status is '${rows[0].status}' — must be 'complete' before syncing to NFT Records.` });
       return;
     }
     const synced = await syncGeneratedItemsToNftRecords(jobId);
