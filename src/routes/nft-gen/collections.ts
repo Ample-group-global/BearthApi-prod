@@ -62,14 +62,19 @@ router.get("/sync-status", async (req, res, next) => {
         WHERE job_id = j.id
       ) fi ON true
       LEFT JOIN LATERAL (
+        -- Matched via generated_item_id -> job_id, NOT serial_number alone.
+        -- serial_number is just "#{edition_number}" and isn't unique across
+        -- collections, so matching by it counted a DIFFERENT collection's
+        -- rows whenever edition numbers overlapped (virtually always, since
+        -- every collection starts at #1) -- this collection would show as
+        -- "records synced" even though none of its own data was ever
+        -- actually written to nft_records.
         SELECT COUNT(*) AS records_count
         FROM nft_records nr
-        WHERE nr.serial_number = ANY (
-          SELECT '#' || gi.edition_number::text
-          FROM nft_generated_items gi
-          WHERE gi.job_id = j.id AND gi.ipfs_image_cid IS NOT NULL
-        )
-        AND nr.image_ipfs_hash IS NOT NULL
+        JOIN nft_generated_items gi ON gi.id = nr.generated_item_id
+        WHERE gi.job_id = j.id
+          AND gi.ipfs_image_cid IS NOT NULL
+          AND nr.image_ipfs_hash IS NOT NULL
       ) rec ON true
       ORDER BY c.created_at DESC
     `);
