@@ -5,7 +5,12 @@ import sharp from "sharp";
 import { getS3Client } from "../clients/s3";
 
 const FILEBASE_GATEWAY = "https://amgbearth.myfilebase.com/ipfs";
-const SYNC_CONCURRENCY = 100;
+// Lowered from 100 after a real incident: 100 (200 concurrent S3 calls per
+// batch counting HEAD+GET together) was enough to trip Filebase's transient
+// rate limiting on repeated full ~10k-item bucket scans, skipping hundreds
+// of genuinely-present items. See withRetry() below for the other half of
+// the fix.
+const SYNC_CONCURRENCY = 40;
 
 // ── Collections ──────────────────────────────────────────────────────────────
 
@@ -641,9 +646,26 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string, force = fal
 
 // ── Sync directly from a Filebase bucket ─────────────────────────────────────
 
+// Both sync callers below run at SYNC_CONCURRENCY=100 (200 concurrent S3
+// calls per batch counting HEAD+GET together), which is enough to trip
+// Filebase's transient rate limiting on a full ~10k-item bucket scan -- a
+// real skip-count regression (16 -> 1594) surfaced this on a second scan run
+// minutes apart. Retry with backoff so a transient throttle/timeout doesn't
+// silently masquerade as "file genuinely missing" during data recovery.
+async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try { return await fn(); } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, Math.min(500 * 2 ** i, 8000)));
+    }
+  }
+  throw lastErr;
+}
+
 async function filebaseHead(bucket: string, key: string): Promise<string | null> {
   try {
-    const r = await getS3Client().send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+    const r = await withRetry(() => getS3Client().send(new HeadObjectCommand({ Bucket: bucket, Key: key })));
     return r.Metadata?.cid ?? null;
   } catch { return null; }
 }
@@ -652,7 +674,7 @@ async function filebaseGetJson(
   bucket: string, key: string,
 ): Promise<{ cid: string | null; body: Record<string, unknown> }> {
   try {
-    const r = await getS3Client().send(new GetObjectCommand({ Bucket: bucket, Key: key }));
+    const r = await withRetry(() => getS3Client().send(new GetObjectCommand({ Bucket: bucket, Key: key })));
     const cid = r.Metadata?.cid ?? null;
     const text = await r.Body?.transformToString();
     return { cid, body: text ? JSON.parse(text) as Record<string, unknown> : {} };
@@ -722,6 +744,7 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
     image_ipfs_hash: string; metadata_ipfs_hash: string; metadata_uri: string;
     blind_box_uri: string | null; traits: Record<string, unknown>;
     rarity_score: number | null; rarity_rank: number | null; rarity_tier: string | null;
+    generated_item_id: string | null;
   };
 
   const fbRows: ItemRow[] = [];
@@ -747,6 +770,7 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
         rarity_score: metaJson.rarity_score != null ? Number(metaJson.rarity_score) : null,
         rarity_rank: metaJson.rarity_rank != null ? Number(metaJson.rarity_rank) : null,
         rarity_tier: metaJson.rarity_tier != null ? String(metaJson.rarity_tier) : null,
+        generated_item_id: null,
       } as ItemRow;
     }));
     for (const r of results) { if (r) fbRows.push(r); else skipped++; }
@@ -754,21 +778,34 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
 
   if (!fbRows.length) return { synced: 0, skipped };
 
+  // Link each row back to the nft_generated_items row it came from, matched
+  // by image CID (a content hash, so it's correct even if this bucket ever
+  // held more than one job's output) — without this, nft_records ends up
+  // with generated_item_id NULL on every row, and the collection sync-status
+  // page permanently reads it as "not synced" even though the data is intact.
+  const cids = fbRows.map(r => r.image_ipfs_hash);
+  const { rows: giRows } = await pool.query(
+    `SELECT id, ipfs_image_cid FROM nft_generated_items WHERE ipfs_image_cid = ANY($1::text[])`,
+    [cids],
+  );
+  const cidToItemId = new Map<string, string>(giRows.map(r => [r.ipfs_image_cid, r.id]));
+  for (const row of fbRows) row.generated_item_id = cidToItemId.get(row.image_ipfs_hash) ?? null;
+
   let totalSynced = 0;
   for (let i = 0; i < fbRows.length; i += 2000) {
     const chunk = fbRows.slice(i, i + 2000);
     const { rowCount } = await pool.query(
       `INSERT INTO nft_records
          (serial_number, stage_id, delivery_status_id, image_ipfs_hash, metadata_ipfs_hash,
-          metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier)
+          metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier, generated_item_id)
        SELECT x.serial_number, x.stage_id::uuid, x.delivery_status_id::uuid,
               x.image_ipfs_hash, x.metadata_ipfs_hash, x.metadata_uri, x.blind_box_uri, x.traits,
-              x.rarity_score, x.rarity_rank, x.rarity_tier
+              x.rarity_score, x.rarity_rank, x.rarity_tier, x.generated_item_id::uuid
        FROM json_to_recordset($1::json) AS x(
          serial_number text, stage_id text, delivery_status_id text,
          image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text,
          blind_box_uri text, traits jsonb,
-         rarity_score numeric, rarity_rank int, rarity_tier text
+         rarity_score numeric, rarity_rank int, rarity_tier text, generated_item_id text
        )
        ON CONFLICT (serial_number) DO UPDATE SET
          image_ipfs_hash    = EXCLUDED.image_ipfs_hash,
@@ -779,6 +816,7 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
          rarity_score       = COALESCE(EXCLUDED.rarity_score, nft_records.rarity_score),
          rarity_rank        = COALESCE(EXCLUDED.rarity_rank,  nft_records.rarity_rank),
          rarity_tier        = COALESCE(EXCLUDED.rarity_tier,  nft_records.rarity_tier),
+         generated_item_id  = COALESCE(EXCLUDED.generated_item_id, nft_records.generated_item_id),
          updated_at         = NOW()`,
       [JSON.stringify(chunk)],
     );
