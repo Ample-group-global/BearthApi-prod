@@ -19,8 +19,13 @@ import { exportMeta, refreshCidMeta, previewMeta, zipRegistry } from "./export-s
 import { saveTask } from "../../utils/taskProgress";
 
 export const BATCH = 500;
-export const CONCURRENCY = 50;
-const META_CONCURRENCY = 20;
+// Moderate bump from 50 — the prior OOM (commit c5bea71) was an unbounded
+// resized-buffer cache, not this concurrency level itself; that fix is
+// still in place. Going much higher risks CPU contention on Sharp's
+// compositing work outweighing the I/O parallelism gain, so staying
+// conservative rather than jumping straight to something aggressive.
+export const CONCURRENCY = 80;
+const META_CONCURRENCY = 30;
 const REFRESH_CONCURRENCY = 20;
 const PREVIEW_THUMB = 64;
 const PREVIEW_CONCURRENCY = 20;
