@@ -133,6 +133,28 @@ router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ── GET /symbol-check — does a layer upload for this Token Symbol already ───
+// exist in bearth-layers? Session prefixes are minted as `${symbol}-${random}`
+// (see CollectionSetup.tsx), so any object under `${symbol}-` means someone
+// already uploaded layers for this symbol. Lets the UI block a second upload
+// before it starts, instead of silently accumulating duplicate layer sets.
+router.get("/symbol-check", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const rawSymbol = (req.query?.symbol ?? "") as string;
+    const safeSymbol = rawSymbol.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+    if (!safeSymbol) { res.status(422).json({ error: "symbol is required." }); return; }
+
+    const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
+    const s3 = getS3Client();
+    const list = await s3.send(new ListObjectsV2Command({
+      Bucket: bucket, Prefix: `${safeSymbol}-`, Delimiter: "/", MaxKeys: 1,
+    }));
+    const existingPrefix = list.CommonPrefixes?.[0]?.Prefix?.replace(/\/$/, "") ?? null;
+    res.json({ exists: !!existingPrefix, prefix: existingPrefix });
+  } catch (e) { next(e); }
+});
+
 // ── POST /upload — receive layer PNGs from BearthAdmin, save to Filebase S3 ──
 router.post("/upload", upload.array("files"), async (req, res, next) => {
   try {
@@ -156,7 +178,15 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
     const added: string[] = [];
     const s3Uploaded: string[] = [];
     const s3Failures: string[] = [];
-    const S3_CONCURRENCY = 12;
+    // Client sorts files by filename before chunking, so this loop already
+    // dispatches them in that order -- a small concurrency window here is a
+    // speed/determinism tradeoff, not a correctness one, since /upload/finalize
+    // verifies every expected key actually landed in the bucket afterward
+    // regardless of which order the concurrent PUTs actually completed in.
+    // Fully serial (1) measured too slow on this machine's current bandwidth;
+    // 12 (the old default) is what caused tonight's connection-timeout
+    // saturation under sustained load -- 4 is a deliberate middle ground.
+    const S3_CONCURRENCY = 4;
     for (let i = 0; i < files.length; i += S3_CONCURRENCY) {
       await Promise.all(files.slice(i, i + S3_CONCURRENCY).map(async (file, j) => {
         const idx = i + j;
@@ -200,8 +230,26 @@ router.post("/upload/finalize", async (req, res, next) => {
     if (!Array.isArray(keptKeys) || !keptKeys.length) { res.status(422).json({ error: "keptKeys must be a non-empty array." }); return; }
 
     const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
-    await cleanupStaleLayerFiles(bucket, `${keyPrefix}${safe}`, new Set(keptKeys));
-    res.json({ ok: true });
+    const layerPath = `${keyPrefix}${safe}`;
+    await cleanupStaleLayerFiles(bucket, layerPath, new Set(keptKeys));
+
+    // Verify against the real bucket, not just the client's own upload
+    // responses — a PUT can report success without the object actually
+    // persisting (a real prior incident: two full layers had zero objects
+    // in the bucket with no error surfaced anywhere).
+    const s3 = getS3Client();
+    const found = new Set<string>();
+    let continuationToken: string | undefined;
+    do {
+      const list = await s3.send(new ListObjectsV2Command({
+        Bucket: bucket, Prefix: `${layerPath}/`, MaxKeys: 1000, ContinuationToken: continuationToken,
+      }));
+      for (const obj of list.Contents ?? []) if (obj.Key) found.add(obj.Key);
+      continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
+    } while (continuationToken);
+    const missing = keptKeys.filter(k => !found.has(k));
+
+    res.json({ ok: missing.length === 0, expectedCount: keptKeys.length, foundCount: found.size, missing });
   } catch (e) { next(e); }
 });
 

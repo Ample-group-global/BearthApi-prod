@@ -12,7 +12,15 @@ function getPool(): Pool {
     ssl: (url.includes("localhost") || url.includes("127.0.0.1"))
       ? false
       : { rejectUnauthorized: false },
-    max: 10,
+    // Parallel export runs up to 8 slices concurrently, each issuing its own
+    // DB queries per batch, alongside normal admin/session traffic sharing
+    // this same pool. At max=10 that queues behind connectionTimeoutMillis
+    // and stalls everything, including unrelated requests like login --
+    // confirmed live: a plain login call took ~90s and every export slice
+    // sat at 0 progress for 9+ minutes. The real Postgres server here allows
+    // 500 connections with only ~13 in use, so this had no server-side
+    // reason to be this low.
+    max: 40,
     min: 1,
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
