@@ -136,7 +136,10 @@ export async function runExport(
     syncToRecords: boolean; resumeFrom: number;
   },
 ) {
-  const { bucket, format, width, height, total, collectionName, description, nameFormat, syncToRecords, resumeFrom } = opts;
+  // collectionName/description/nameFormat are accepted here for backward
+  // compatibility with existing callers, but deliberately unused below —
+  // see the DB-anchored lookup inside runExportBody().
+  const { bucket, format, width, height, total, syncToRecords, resumeFrom } = opts;
   const ext = format === "webp" ? "webp" : "png";
   const mime = ext === "webp" ? "image/webp" : "image/png";
   const state = exportMeta.jobs.get(exportId)!;
@@ -158,7 +161,30 @@ export async function runExport(
 
   async function runExportBody() {
 
-  const safeName = (collectionName || "bearth-nft-collection").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
+  // Identity fields (name/description/name_format) MUST come from the
+  // collection's own DB row, not the request body — a 9,999-item export
+  // runs across many separate invocations (the original click, plus every
+  // stall-recovery resume), and each one is a fresh HTTP request that can
+  // carry a different or incomplete opts.collectionName/description. Two
+  // invocations of the SAME export previously sent different subsets of
+  // these fields, silently splitting one collection's metadata into two
+  // inconsistent naming/description patterns (confirmed live: exactly
+  // inverse-correlated "Bearth #N"/"" vs "#N"/"Bearth NFT" splits across
+  // the 9,999-item run). Reading once per invocation from `nft_collections`
+  // makes every invocation of the same collection_id produce byte-identical
+  // values, by construction — there is only one place the value can come
+  // from. opts.collectionName/description/nameFormat are still accepted on
+  // the route for backward compatibility but are no longer trusted here.
+  const { rows: collRows } = await pool.query(
+    `SELECT c.name, c.description, c.name_format FROM nft_generation_jobs j
+     JOIN nft_collections c ON c.id = j.collection_id WHERE j.id = $1::uuid`,
+    [jobId],
+  );
+  const dbCollectionName = collRows[0]?.name ?? "";
+  const dbDescription = collRows[0]?.description ?? "";
+  const dbNameFormat = collRows[0]?.name_format ?? "";
+
+  const safeName = (dbCollectionName || "bearth-nft-collection").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
   const zipKey = `downloads/${jobId}.zip`;
   let zipS3: S3MultipartWritable | null = null;
   let zipOut: ZipStream | null = null;
@@ -391,14 +417,14 @@ export async function runExport(
         const imgCid = await pollCid(s3, bucket, imgKey, 30_000);
         if (!imgCid) missedCids.push({ editionNumber: editionNum, imgKey, metaKey });
 
-        const nftName = applyNameFormat(nameFormat || (collectionName ? `${collectionName} #{{id}}` : "#{{id}}"), editionNum);
+        const nftName = applyNameFormat(dbNameFormat || (dbCollectionName ? `${dbCollectionName} #{{id}}` : "#{{id}}"), editionNum);
         const validLayers = layers.filter(l => l.file_path);
         const traitAttributes = validLayers.map(l => ({ trait_type: l.trait_type, value: l.trait_value }));
         const baseUrl = "https://www.imbearth.com";
 
         const metaJson = JSON.stringify({
           name: nftName,
-          description,
+          description: dbDescription,
           image: imgCid ? `ipfs://${imgCid}` : `ipfs://pending/${imgKey}`,
           external_url: baseUrl,
           attributes: [
@@ -515,7 +541,10 @@ export async function runExportSlice(
     rangeStart: number; rangeEnd: number; resumeFrom: number;
   },
 ) {
-  const { bucket, format, width, height, collectionName, description, nameFormat, rangeStart, rangeEnd, resumeFrom } = opts;
+  // collectionName/description/nameFormat are accepted here for backward
+  // compatibility with existing callers, but deliberately unused below —
+  // see the DB-anchored lookup inside runSliceBody().
+  const { bucket, format, width, height, rangeStart, rangeEnd, resumeFrom } = opts;
   const ext = format === "webp" ? "webp" : "png";
   const mime = ext === "webp" ? "image/webp" : "image/png";
   const state = exportMeta.rangeSlices.get(exportId)!;
@@ -532,6 +561,19 @@ export async function runExportSlice(
   }
 
   async function runSliceBody() {
+    // Same DB-anchored identity fix as runExport — see its comment. A
+    // range-parallel export runs each slice as its OWN separate invocation
+    // (up to 8 concurrently, plus every stall-recovery resume of any one
+    // of them), so this is exactly where the split-identity bug bit hardest.
+    const { rows: collRows } = await pool.query(
+      `SELECT c.name, c.description, c.name_format FROM nft_generation_jobs j
+       JOIN nft_collections c ON c.id = j.collection_id WHERE j.id = $1::uuid`,
+      [jobId],
+    );
+    const dbCollectionName = collRows[0]?.name ?? "";
+    const dbDescription = collRows[0]?.description ?? "";
+    const dbNameFormat = collRows[0]?.name_format ?? "";
+
     // ── Phase 1: composite + upload images for this slice only ─────────────
     const imgLoopStart = Math.max(rangeStart, Math.floor(resumeFrom / BATCH) * BATCH);
     for (let offset = imgLoopStart; offset < rangeEnd; offset += BATCH) {
@@ -713,14 +755,14 @@ export async function runExportSlice(
           const imgCid = await pollCid(s3, bucket, imgKey, 30_000);
           if (!imgCid) missedCids.push({ editionNumber: editionNum, imgKey, metaKey });
 
-          const nftName = applyNameFormat(nameFormat || (collectionName ? `${collectionName} #{{id}}` : "#{{id}}"), editionNum);
+          const nftName = applyNameFormat(dbNameFormat || (dbCollectionName ? `${dbCollectionName} #{{id}}` : "#{{id}}"), editionNum);
           const validLayers = layers.filter(l => l.file_path);
           const traitAttributes = validLayers.map(l => ({ trait_type: l.trait_type, value: l.trait_value }));
           const baseUrl = "https://www.imbearth.com";
 
           const metaJson = JSON.stringify({
             name: nftName,
-            description,
+            description: dbDescription,
             image: imgCid ? `ipfs://${imgCid}` : `ipfs://pending/${imgKey}`,
             external_url: baseUrl,
             attributes: [
