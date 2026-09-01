@@ -8,11 +8,6 @@ const router = Router();
 router.post("/sync-from-filebase", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.generate");
-    // No hardcoded bucket fallback here on purpose — this route deletes and
-    // rebuilds the entire nft_records table from whatever bucket it's given,
-    // so silently guessing the wrong one is exactly how a real incident
-    // happened before (an unrelated bucket's data got wiped). The caller
-    // must say which bucket explicitly, every time.
     const bucket = (req.body?.bucket as string) || "";
     if (!bucket.trim()) { res.status(422).json({ error: "bucket is required." }); return; }
     await pool.query("DELETE FROM nft_records");
@@ -122,8 +117,6 @@ router.get("/:id/items", async (req, res, next) => {
 router.get("/:id/display-items", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
-    // Safety ceiling only (guards against an accidental/malicious huge
-    // LIMIT), not a collection-size cap — real projects can exceed 10K.
     const limit = Math.min(Number(req.query.limit ?? 50), 50000);
     const offset = Number(req.query.offset ?? 0);
     const { rows } = await pool.query(`

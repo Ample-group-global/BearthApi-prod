@@ -31,7 +31,6 @@ router.post("/", async (req, res, next) => {
 });
 
 // ── Sync status across all collections ────────────────────────────────────────
-// Must be declared before /:id to prevent Express treating "sync-status" as a UUID.
 router.get("/sync-status", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");

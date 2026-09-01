@@ -37,8 +37,6 @@ const corsOrigins = (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(
 app.use(cors({ origin: corsOrigins, credentials: true }));
 app.use(express.json({ limit: "10mb" }));
 app.use(rateLimit({ windowMs: 60_000, limit: 2000, standardHeaders: "draft-7", legacyHeaders: false }));
-// Attaches req.userCtx (live DB permissions) for every admin-authenticated
-// request. Must run before any router that calls requireRole/requirePermission.
 app.use(loadUserContext);
 
 app.get("/api/docs.json", (req, res) => {

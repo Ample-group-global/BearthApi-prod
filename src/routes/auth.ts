@@ -49,11 +49,10 @@ router.post("/admin/forgot-password", async (req, res, next) => {
     if (!email) { res.status(400).json({ error: "Email is required" }); return; }
     const user = await authService.getUserByEmail(String(email));
     if (!user || !user.isActive) {
-      // Return success to avoid user enumeration — never reveal if email exists
       res.json({ success: true }); return;
     }
-    const token     = await authService.createResetToken(user.id, user.email);
-    const adminUrl  = process.env.ADMIN_URL ?? "http://localhost:3000";
+    const token = await authService.createResetToken(user.id, user.email);
+    const adminUrl = process.env.ADMIN_URL ?? "http://localhost:3000";
     const resetLink = `${adminUrl}/reset-password?token=${token}`;
     await sendResetPasswordEmail(user.email, resetLink, user.name, authService.RESET_EXPIRES_MINUTES);
     res.json({ success: true });

@@ -80,11 +80,9 @@ router.get("/treasury-nfts", async (_req, res, next) => {
 });
 
 // POST /api/nft-sell/waves/resync replay all events from block history to rebuild DB.
-// Returns immediately; resync runs in background so auth/other pools stay healthy.
 router.post("/resync", requireAdmin, async (req, res, next) => {
   try {
     const fromBlock = parseInt(req.body.fromBlock ?? "0", 10);
-    // Fire-and-forget: don't await prevents pool starvation during long scans
     resyncFromBlock(fromBlock).catch(e => console.error("[resync] background error", e));
     res.json({ ok: true, started: true, message: "Resync started in background check server logs for progress" });
   } catch (err) {
@@ -130,7 +128,6 @@ router.get("/:num", async (req, res, next) => {
 });
 
 // PUT /api/nft-sell/waves/:num/schedule set wave start/end time on-chain
-// Body: { startUnix: number, endUnix: number }
 router.put("/:num/schedule", requireAdmin, async (req, res, next) => {
   try {
     const num = parseInt(req.params.num, 10);
@@ -143,8 +140,6 @@ router.put("/:num/schedule", requireAdmin, async (req, res, next) => {
       return res.status(400).json({ error: "Valid startUnix and endUnix (end > start) required" });
 
     const now = Date.now();
-
-    // Lock rule: schedule cannot be changed once the wave is active, minted, or closed
     const { rows: curRows } = await pool.query(
       "SELECT scheduled_start, wave_start_triggered, wave_closed FROM nft_waves WHERE wave_number = $1",
       [num],
@@ -166,8 +161,6 @@ router.put("/:num/schedule", requireAdmin, async (req, res, next) => {
         error: `Wave ${num} schedule is locked the start time has already arrived.`,
       });
     }
-
-    // Rules 1, 2, 3: sequential gate
     if (num > 1) {
       const { rows: prevRows } = await pool.query(
         "SELECT scheduled_end FROM nft_waves WHERE wave_number = $1",
@@ -187,8 +180,6 @@ router.put("/:num/schedule", requireAdmin, async (req, res, next) => {
     }
 
     const receipt = await contractSetWaveSchedule(num, startUnix, endUnix);
-
-    // Persist schedule to DB so auto-trigger picks up the right timestamps
     const startIso = new Date(startUnix * 1000).toISOString();
     const endIso = new Date(endUnix * 1000).toISOString();
     await pool.query(
@@ -271,8 +262,6 @@ router.put("/:num/purchase-limit", requireAdmin, async (req, res, next) => {
 });
 
 // POST /api/nft-sell/waves/:num/reveal  admin manually reveals a specific wave
-// Body: { uri: string }  e.g. "ipfs://Qm..."
-// This path uses executeWaveReveal for random token assignment (Fisher-Yates shuffle)
 router.post("/:num/reveal", requireAdmin, async (req, res, next) => {
   try {
     const num = parseInt(req.params.num, 10);
@@ -468,8 +457,8 @@ router.get("/:num/treasury-close-estimate", requireAdmin, async (req, res, next)
       // estimateGas can fail if wave guards are not met — use fallback
     }
 
-    const balanceEth    = parseFloat(ethers.formatEther(balanceWei));
-    const estimatedEth  = parseFloat(ethers.formatEther(estimatedGasWei));
+    const balanceEth = parseFloat(ethers.formatEther(balanceWei));
+    const estimatedEth = parseFloat(ethers.formatEther(estimatedGasWei));
 
     res.json({
       walletAddress: signer.address,

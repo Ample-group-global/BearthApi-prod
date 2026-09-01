@@ -15,7 +15,6 @@ const SECRET: string = _rawSecret;
 export type AdminRole = "admin" | "ops" | "tech";
 
 declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       userCtx?: {
@@ -26,12 +25,6 @@ declare global {
     }
   }
 }
-
-// Populates req.userCtx with the requester's live permission set from
-// the database (permissions + role_permissions + user_permission_overrides).
-// Must run before requireRole/requirePermission so authorization reflects
-// the current DB state — not the role that was baked into the token at
-// login time, and not a hardcoded permission map.
 export async function loadUserContext(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
     const token = extractBearer(req);

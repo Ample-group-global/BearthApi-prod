@@ -1,8 +1,8 @@
 // Downloads all objects (images + metadata) from a Filebase S3-compatible bucket
 // to a local folder, preserving the bucket's key structure.
 //
-// Usage: node scripts/download-filebase-bucket.js [bucketName] [destPath]
-// Defaults: bucket = bearth-nft-it, dest = D:\Bearth-Downloads\<bucket>
+// Usage: node scripts/download-filebase-bucket.js [bucketName] [destPath] [concurrency]
+// Defaults: bucket = bearth-nft-it, dest = D:\Bearth-Downloads\<bucket>, concurrency = 40
 
 const { S3Client, ListObjectsV2Command, GetObjectCommand } = require('@aws-sdk/client-s3');
 const fs = require('fs');
@@ -11,7 +11,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env.local') });
 
 const BUCKET = process.argv[2] || 'bearth-nft-it';
 const DEST_ROOT = process.argv[3] || path.join('D:\\Bearth-Downloads', BUCKET);
-const CONCURRENCY = 40;
+const CONCURRENCY = Number(process.argv[4]) || 40;
 
 const s3 = new S3Client({
   endpoint: 'https://s3.filebase.com',

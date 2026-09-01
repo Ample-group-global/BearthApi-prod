@@ -15,14 +15,6 @@ export function getS3Client(): S3Client {
     credentials: { accessKeyId, secretAccessKey },
     forcePathStyle: true,
     requestHandler: new NodeHttpHandler({
-      // Parallel export runs up to 8 slices at CONCURRENCY=150 each (see
-      // export-workers.ts) -- up to ~1200 concurrent S3 calls sharing this
-      // one client. At maxSockets=200, requests queued for a free socket
-      // routinely sat past the 10s connectionTimeout and got killed with
-      // "the request socket did not establish a connection ... within
-      // 10000 ms" -- a local pool-capacity failure, not a Filebase-side
-      // one, confirmed live: multiple slices died this way simultaneously
-      // while the real bucket still had zero objects uploaded.
       httpsAgent: new https.Agent({ maxSockets: 1500 }),
       connectionTimeout: 10_000,
       requestTimeout: 30_000,

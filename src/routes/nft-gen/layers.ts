@@ -7,10 +7,6 @@ import { getS3Client } from "../../clients/s3";
 import { deleteObjectsChunked } from "../../utils/deleteObjects";
 import pool from "../../pool";
 
-// Deletes only the stale objects left over from a previous import of this
-// same layer — i.e. keys under `${layer}/` that aren't in the set we just
-// uploaded. Scoped to one layer and run only after its new files are
-// confirmed uploaded, so a failed/partial upload never empties anything.
 async function cleanupStaleLayerFiles(bucket: string, layer: string, keptKeys: Set<string>): Promise<void> {
   const s3 = getS3Client();
   const prefix = `${layer}/`;
@@ -30,14 +26,6 @@ async function cleanupStaleLayerFiles(bucket: string, layer: string, keptKeys: S
 
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
-// "Start a new collection" calls this to clean up an abandoned, not-yet-saved
-// upload attempt. bearth-layers holds EVERY artist's/collection's layers side
-// by side (each upload gets its own random session-prefix folder so real
-// uploads never collide on filenames) -- but this route used to delete the
-// ENTIRE bucket with no scoping at all, so any artist resetting their own
-// working session silently destroyed every other artist's layer files,
-// including already-fully-generated collections'. Now requires the caller's
-// own session prefix and only ever touches objects under it.
 router.post("/clear-bucket", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
@@ -69,9 +57,6 @@ router.post("/clear-bucket", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /collections/:id/prefixes — distinct upload-session prefixes this ────
-// collection's traits currently reference. Used by the Settings-tab re-upload
-// flow to know what to clean up afterward -- see /cleanup-orphaned-prefix.
 router.get("/collections/:id/prefixes", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -86,15 +71,6 @@ router.get("/collections/:id/prefixes", async (req, res, next) => {
 });
 
 // ── POST /cleanup-orphaned-prefix — delete a session-prefix folder, but ──────
-// only if no trait row anywhere in the DB still references it. A layer
-// re-upload mints a brand new random prefix every time (by design, so two
-// artists' concurrent uploads never collide) -- but nothing used to clean up
-// the PREVIOUS prefix once its traits were repointed at the new one, so
-// bearth-layers accumulated an orphaned ~40MB+ folder on every single
-// re-upload of the same collection (confirmed live: 5 abandoned prefixes,
-// ~250MB, from repeated re-uploads during one test session). Self-verifying
-// by design -- never deletes a prefix still in active use, so it's safe to
-// call speculatively after every sync.
 router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
@@ -120,8 +96,6 @@ router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
       continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
     } while (continuationToken);
 
-    // Same prefix also appears under _thumbs/{size}/{prefix}/... — clean
-    // those up too so the cache doesn't keep dead entries forever.
     let thumbDeleted = 0;
     const thumbList = await s3.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: "_thumbs/", MaxKeys: 1000 }));
     const thumbKeys = (thumbList.Contents ?? [])
@@ -134,10 +108,6 @@ router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
 });
 
 // ── GET /symbol-check — does a layer upload for this Token Symbol already ───
-// exist in bearth-layers? Session prefixes are minted as `${symbol}-${random}`
-// (see CollectionSetup.tsx), so any object under `${symbol}-` means someone
-// already uploaded layers for this symbol. Lets the UI block a second upload
-// before it starts, instead of silently accumulating duplicate layer sets.
 router.get("/symbol-check", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -165,27 +135,12 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
     const files = (req.files ?? []) as Express.Multer.File[];
     const safe = layer.trim().replace(/[^a-zA-Z0-9\-_ ]/g, "");
     if (!safe) { res.status(400).json({ error: "layer name required" }); return; }
-    // Every upload attempt carries its own unique namespace (minted client-side
-    // per drop) so this collection's/run's assets can never collide with, or be
-    // silently overwritten by, another collection's identically-named layer
-    // folder in the shared bucket — the root cause of a real incident where a
-    // generated NFT composited in a completely unrelated stale image because
-    // two uploads had written to the exact same flat key. Falls back to the
-    // legacy flat layout only for older callers that don't send one yet.
     const rawPrefix = (req.body?.sessionPrefix ?? "") as string;
     const safePrefix = rawPrefix.trim().replace(/[^a-zA-Z0-9\-_]/g, "");
     const keyPrefix = safePrefix ? `${safePrefix}/` : "";
     const added: string[] = [];
     const s3Uploaded: string[] = [];
     const s3Failures: string[] = [];
-    // Client sorts files by filename before chunking, so this loop already
-    // dispatches them in that order -- a small concurrency window here is a
-    // speed/determinism tradeoff, not a correctness one, since /upload/finalize
-    // verifies every expected key actually landed in the bucket afterward
-    // regardless of which order the concurrent PUTs actually completed in.
-    // Fully serial (1) measured too slow on this machine's current bandwidth;
-    // 12 (the old default) is what caused tonight's connection-timeout
-    // saturation under sustained load -- 4 is a deliberate middle ground.
     const S3_CONCURRENCY = 4;
     for (let i = 0; i < files.length; i += S3_CONCURRENCY) {
       await Promise.all(files.slice(i, i + S3_CONCURRENCY).map(async (file, j) => {
@@ -210,13 +165,6 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
 });
 
 // ── POST /upload/finalize — clean up a layer's stale leftovers ──────────────
-// A layer's files can arrive across several /upload calls (the client chunks
-// large layers to stay under typical serverless request-body limits), so
-// cleanup can no longer safely run inside /upload itself — it would delete
-// files a later chunk hasn't uploaded yet. The client already knows every
-// key a layer is SUPPOSED to have (computed once, deterministically, during
-// its own file parse) and calls this once, after every chunk for that layer
-// has confirmed success, passing that complete set as `keptKeys`.
 router.post("/upload/finalize", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
@@ -228,15 +176,9 @@ router.post("/upload/finalize", async (req, res, next) => {
     const keyPrefix = safePrefix ? `${safePrefix}/` : "";
     const keptKeys = (req.body?.keptKeys ?? []) as string[];
     if (!Array.isArray(keptKeys) || !keptKeys.length) { res.status(422).json({ error: "keptKeys must be a non-empty array." }); return; }
-
     const bucket = process.env.FILEBASE_LAYERS_BUCKET || "bearth-layers";
     const layerPath = `${keyPrefix}${safe}`;
     await cleanupStaleLayerFiles(bucket, layerPath, new Set(keptKeys));
-
-    // Verify against the real bucket, not just the client's own upload
-    // responses — a PUT can report success without the object actually
-    // persisting (a real prior incident: two full layers had zero objects
-    // in the bucket with no error surfaced anywhere).
     const s3 = getS3Client();
     const found = new Set<string>();
     let continuationToken: string | undefined;
@@ -329,9 +271,6 @@ router.post("/:id/traits/bulk", async (req, res, next) => {
     for (const t of traits) {
       if (!t?.name?.trim()) { res.status(422).json({ error: "Every trait needs a name." }); return; }
       if (!t?.filePath?.trim()) { res.status(422).json({ error: "Every trait needs a filePath." }); return; }
-      // null/undefined means "not classified" and must stay that way — forcing
-      // it to "common" here defeated the nullable rarity_tier migration for
-      // the exact flow (Excel sync) it was meant to fix.
       if (t.rarityTier == null) continue;
       const tier = String(t.rarityTier).toLowerCase();
       if (!VALID_TIERS.includes(tier)) {
