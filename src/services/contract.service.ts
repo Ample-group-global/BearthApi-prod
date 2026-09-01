@@ -1,6 +1,6 @@
 ﻿import { ethers, type Contract, type EventLog } from "ethers";
 import pool from "../pool";
-import BearthNFT_ABI from "../abi/BearthGenesisNFT.abi.json";
+import BearthNFT_ABI from "../abi/BearthNFT.abi.json";
 import { getProvider } from "../utils/contract-factory";
 import { logNftActivity } from "./nft-log.service";
 

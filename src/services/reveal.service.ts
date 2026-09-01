@@ -1,7 +1,7 @@
 import pool from "../pool";
 import { logNftActivity } from "./nft-log.service";
 import { ethers } from "ethers";
-import GenesisABI from "../abi/BearthGenesisNFT.abi.json";
+import GenesisABI from "../abi/BearthNFT.abi.json";
 import CoordinatorABI from "../abi/BearthRevealCoordinator.abi.json";
 
 function getSigner(): ethers.Wallet {
