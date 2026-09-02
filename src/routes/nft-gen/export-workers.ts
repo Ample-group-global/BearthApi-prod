@@ -1026,20 +1026,32 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
         continue;
       }
 
-      if (!imgCid) {
-        // CID not yet assigned by Filebase — skip for now (user can re-run later)
-        state.progress++; state.skipped++;
-        state.phase = `Refreshing CIDs… ${state.progress} / ${state.total}`;
-        continue;
-      }
-
-      // Fetch existing metadata JSON
+      // Fetch existing metadata JSON — needed below regardless of whether the
+      // header-based imgCid was found, since a completed export already
+      // writes a real "ipfs://<cid>" into the file body even when Filebase's
+      // x-amz-meta-cid object header lags behind or never gets attached (seen
+      // live: a fully-uploaded, fully-pinned collection whose headers simply
+      // never populated, leaving every item permanently "skipped" with no
+      // way to recover without this fallback).
       let parsed: Record<string, unknown>;
       try {
         const getResp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: metaKey }));
         const raw = (await streamToBuffer(getResp.Body)).toString("utf8");
         parsed = JSON.parse(raw);
       } catch {
+        state.progress++; state.skipped++;
+        state.phase = `Refreshing CIDs… ${state.progress} / ${state.total}`;
+        continue;
+      }
+
+      if (!imgCid) {
+        const fileImageCid = String(parsed.image ?? "").match(/^ipfs:\/\/(\S+)$/)?.[1];
+        if (fileImageCid) imgCid = fileImageCid;
+      }
+
+      if (!imgCid) {
+        // CID not yet assigned by Filebase, and not already resolved in the
+        // metadata file either — skip for now (user can re-run later)
         state.progress++; state.skipped++;
         state.phase = `Refreshing CIDs… ${state.progress} / ${state.total}`;
         continue;
