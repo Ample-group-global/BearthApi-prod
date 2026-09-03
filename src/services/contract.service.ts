@@ -402,10 +402,11 @@ export async function contractSetWaveSchedule(
 
 export async function contractSetWavePrice(
   waveNum: number,
-  priceWei: bigint
+  priceWei: bigint,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
-  const { rows } = await pool.query("SELECT price_locked FROM nft_waves WHERE wave_number=$1", [waveNum]);
+  const { rows } = await pool.query("SELECT price_locked FROM nft_waves WHERE wave_number=$1 AND collection_id=$2", [waveNum, collectionId]);
   if (rows[0]?.price_locked) throw new Error(`Wave ${waveNum} price is locked  first sale has occurred`);
   return callContract("setWavePrice", [waveNum, priceWei]);
 }

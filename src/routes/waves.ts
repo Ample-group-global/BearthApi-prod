@@ -44,13 +44,14 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
     if (!id) return res.status(400).json({ error: "Wave id required" });
 
     const { rows: existing } = await pool.query(
-      "SELECT id, wave_number, status, scheduled_start, scheduled_end, wave_closed, wave_start_triggered, wave_reveal_triggered, price_locked, is_revealed FROM nft_waves WHERE id = $1::uuid",
+      "SELECT id, wave_number, collection_id, status, scheduled_start, scheduled_end, wave_closed, wave_start_triggered, wave_reveal_triggered, price_locked, is_revealed FROM nft_waves WHERE id = $1::uuid",
       [id],
     );
     if (!existing.length) return res.status(404).json({ error: "Wave not found" });
 
     const wave       = existing[0];
     const waveNumber = Number(wave.wave_number);
+    const collectionId = wave.collection_id as string;
     const existingStart = wave.scheduled_start ? new Date(wave.scheduled_start) : null;
     const existingEnd   = wave.scheduled_end   ? new Date(wave.scheduled_end)   : null;
     const now = new Date();
@@ -142,8 +143,8 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
     // so all waves can be pre-scheduled upfront as long as timestamps are valid.
     if (waveNumber > 1 && (startVal || endVal)) {
       const { rows: prevRows } = await pool.query(
-        "SELECT scheduled_end FROM nft_waves WHERE wave_number = $1",
-        [waveNumber - 1],
+        "SELECT scheduled_end FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+        [waveNumber - 1, collectionId],
       );
       const prevEnd = prevRows[0]?.scheduled_end ? new Date(prevRows[0].scheduled_end) : null;
       if (!prevEnd) {
@@ -162,8 +163,8 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
     // This prevents overlaps when Wave N's end is updated after Wave N+1 was already scheduled.
     if (endVal && waveNumber < 7) {
       const { rows: nextRows } = await pool.query(
-        "SELECT scheduled_start FROM nft_waves WHERE wave_number = $1",
-        [waveNumber + 1],
+        "SELECT scheduled_start FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+        [waveNumber + 1, collectionId],
       );
       const nextStart = nextRows[0]?.scheduled_start ? new Date(nextRows[0].scheduled_start) : null;
       if (nextStart && new Date(endVal) >= nextStart) {
@@ -238,16 +239,21 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
 
     // Link nft_records to this wave by serial number range (idempotent — only touches unlinked rows).
     // Ensures records are wave-linked before auto-trigger reveal/treasury runs.
+    // collection_id filter is required now that nft_records holds multiple
+    // collections side by side (each with its own overlapping #1..#N serial
+    // range) -- without it this would cross-assign the same wave to every
+    // collection's matching-numbered rows at once.
     await pool.query(
       `UPDATE nft_records
           SET wave_id    = $1::uuid,
               wave_num   = $2,
               updated_at = NOW()
         WHERE wave_id IS NULL
+          AND collection_id = $3::uuid
           AND CAST(REPLACE(serial_number, '#', '') AS INTEGER)
               BETWEEN (SELECT cumulative_start FROM nft_waves WHERE id = $1::uuid)
                   AND (SELECT cumulative_end   FROM nft_waves WHERE id = $1::uuid)`,
-      [id, waveNumber],
+      [id, waveNumber, collectionId],
     );
     const { rows } = await pool.query("SELECT * FROM nft_waves WHERE id = $1::uuid", [id]);
     res.json({ ok: true, wave: rows[0] });
@@ -261,10 +267,24 @@ router.post("/:waveNumber/sync-metadata", requireAdmin, async (req, res, next) =
   try {
     const waveNum = parseInt(req.params.waveNumber, 10);
     if (isNaN(waveNum)) { res.status(400).json({ error: "Invalid wave number" }); return; }
-    await _syncRevealedMetadata(waveNum);
-    const { rows } = await pool.query(
-      `SELECT COUNT(*) AS synced FROM nft_records WHERE on_chain_wave_num = $1 AND image_ipfs_hash IS NOT NULL`,
+
+    // Only one collection can ever have real on-chain minted tokens at a
+    // time (single fixed-supply contract) -- derive it from whichever
+    // collection actually has minted rows for this wave, rather than
+    // requiring a separate param on a route that only ever touches
+    // already-minted, contract-verified state.
+    const { rows: mintedColl } = await pool.query<{ collection_id: string }>(
+      `SELECT DISTINCT collection_id FROM nft_records WHERE on_chain_wave_num = $1 AND token_id IS NOT NULL AND collection_id IS NOT NULL LIMIT 1`,
       [waveNum],
+    );
+    if (!mintedColl.length) {
+      res.status(404).json({ error: `No minted tokens found for wave ${waveNum}` });
+      return;
+    }
+    await _syncRevealedMetadata(waveNum, mintedColl[0].collection_id);
+    const { rows } = await pool.query(
+      `SELECT COUNT(*) AS synced FROM nft_records WHERE on_chain_wave_num = $1 AND collection_id = $2 AND image_ipfs_hash IS NOT NULL`,
+      [waveNum, mintedColl[0].collection_id],
     );
     res.json({ ok: true, waveNumber: waveNum, synced: Number(rows[0].synced) });
   } catch (err) { next(err); }

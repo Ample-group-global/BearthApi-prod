@@ -24,14 +24,14 @@ function getCoordinatorContract(signer: ethers.Wallet): ethers.Contract | null {
   return new ethers.Contract(addr, CoordinatorABI, signer);
 }
 
-export async function executeWaveReveal(waveNum: number): Promise<string | null> {
+export async function executeWaveReveal(waveNum: number, collectionId: string): Promise<string | null> {
   const { rows: waveRows } = await pool.query<{
     id: string;
     wave_number: number;
     wave_reveal_uri: string | null;
   }>(
-    "SELECT id, wave_number, wave_reveal_uri FROM nft_waves WHERE wave_number = $1",
-    [waveNum],
+    "SELECT id, wave_number, wave_reveal_uri FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+    [waveNum, collectionId],
   );
   if (!waveRows.length) throw new Error(`Wave ${waveNum} not found`);
   const wave = waveRows[0];
@@ -87,8 +87,8 @@ export async function executeWaveReveal(waveNum: number): Promise<string | null>
          vrf_request_id   = $3,
          vrf_requested_at = NOW(),
          updated_at       = NOW()
-       WHERE wave_number = $1`,
-      [waveNum, provenanceHash, vrfRequestId],
+       WHERE wave_number = $1 AND collection_id = $4`,
+      [waveNum, provenanceHash, vrfRequestId, collectionId],
     );
 
     console.log(`[reveal] Wave ${waveNum}: waiting for WaveRevealed event (up to 10 min)…`);
@@ -103,7 +103,7 @@ export async function executeWaveReveal(waveNum: number): Promise<string | null>
     } catch { }
 
     await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, txHash, provenanceHash, startingIndexNum);
-    await _syncRevealedMetadata(waveNum);
+    await _syncRevealedMetadata(waveNum, collectionId);
     return txHash;
   }
 
@@ -118,7 +118,7 @@ export async function executeWaveReveal(waveNum: number): Promise<string | null>
   console.log(`[reveal] Wave ${waveNum}: revealed directly, tx: ${txHash}`);
 
   await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, txHash, null, 0);
-  await _syncRevealedMetadata(waveNum);
+  await _syncRevealedMetadata(waveNum, collectionId);
   return txHash;
 }
 
@@ -206,20 +206,20 @@ async function _updateWaveRevealedInDB(
   console.log(`[reveal] Wave ${waveNum} reveal state synced to DB — ${revealedRows ?? 0} customer NFTs marked revealed, ${pendingRows ?? 0} unsold → reserved`);
 }
 
-export async function _syncRevealedMetadata(waveNum: number): Promise<void> {
+export async function _syncRevealedMetadata(waveNum: number, collectionId: string): Promise<void> {
   const { rows: waveRows } = await pool.query<{
     quantity: number;
     starting_index: number | null;
   }>(
-    `SELECT quantity, starting_index FROM nft_waves WHERE wave_number = $1`,
-    [waveNum],
+    `SELECT quantity, starting_index FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
+    [waveNum, collectionId],
   );
   if (!waveRows.length) return;
   const { quantity: waveQty, starting_index: startingIndex } = waveRows[0];
 
   const { rows: mintedTokens } = await pool.query<{ id: string; token_id: number }>(
-    `SELECT id, token_id FROM nft_records WHERE on_chain_wave_num = $1 AND token_id IS NOT NULL`,
-    [waveNum],
+    `SELECT id, token_id FROM nft_records WHERE on_chain_wave_num = $1 AND collection_id = $2 AND token_id IS NOT NULL`,
+    [waveNum, collectionId],
   );
   if (!mintedTokens.length) {
     console.log(`[reveal] Wave ${waveNum}: no minted tokens to sync metadata for`);
@@ -246,8 +246,8 @@ export async function _syncRevealedMetadata(waveNum: number): Promise<void> {
   }>(
     `SELECT serial_number, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, blind_box_uri, traits
      FROM nft_records
-     WHERE serial_number = ANY($1::text[])`,
-    [editionSerials],
+     WHERE serial_number = ANY($1::text[]) AND collection_id = $2`,
+    [editionSerials, collectionId],
   );
   const artworkMap = new Map(artworkRows.map(r => [r.serial_number, r]));
 
@@ -281,10 +281,11 @@ export async function _syncRevealedMetadata(waveNum: number): Promise<void> {
   // rank cutoff (<=100/500/1500) with no relationship to the actual
   // collection size, so any collection whose supply isn't close to ~10,000
   // got every item mis-tiered here (e.g. a 50-item collection: rank<=100 is
-  // always true, so every revealed item became "legendary"). nft_records
-  // holds exactly one collection's rows at a time, so its own row count is
-  // that collection's real supply.
-  const { rows: supplyRows } = await pool.query(`SELECT COUNT(*) AS total FROM nft_records`);
+  // always true, so every revealed item became "legendary"). Scoped to this
+  // wave's own collection_id — nft_records now holds multiple collections
+  // side by side, so an unscoped COUNT(*) would use the combined total of
+  // every collection instead of just this one's real supply.
+  const { rows: supplyRows } = await pool.query(`SELECT COUNT(*) AS total FROM nft_records WHERE collection_id = $1`, [collectionId]);
   const totalSupply = Number(supplyRows[0]?.total ?? 0);
   const legendaryMax = Math.ceil(totalSupply * 0.01);
   const epicMax = Math.ceil(totalSupply * 0.05);
@@ -298,14 +299,15 @@ export async function _syncRevealedMetadata(waveNum: number): Promise<void> {
        ELSE 'common'
      END
      WHERE on_chain_wave_num = $1
+       AND collection_id = $5
        AND token_id IS NOT NULL
        AND rarity_rank IS NOT NULL
        AND rarity_tier IS NULL`,
-    [waveNum, legendaryMax, epicMax, rareMax],
+    [waveNum, legendaryMax, epicMax, rareMax, collectionId],
   );
 }
 
-export async function repairTreasuryMintsForWave(waveNum: number): Promise<{ assigned: number; revealed: number }> {
+export async function repairTreasuryMintsForWave(waveNum: number, collectionId: string): Promise<{ assigned: number; revealed: number }> {
   const CONTRACT_ADDR = process.env.CONTRACT_ADDRESS!;
   const RPC_URL = process.env.ETH_RPC_URL ?? process.env.ETH_RPC_URL_MAINNET ?? "";
   if (!CONTRACT_ADDR || !RPC_URL) {
@@ -314,8 +316,8 @@ export async function repairTreasuryMintsForWave(waveNum: number): Promise<{ ass
   }
 
   const { rows: waveRows } = await pool.query<{ id: string; starting_index: number | null }>(
-    `SELECT id, starting_index FROM nft_waves WHERE wave_number = $1`,
-    [waveNum],
+    `SELECT id, starting_index FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
+    [waveNum, collectionId],
   );
   if (!waveRows.length) return { assigned: 0, revealed: 0 };
   const { id: waveId, starting_index: startingIndex } = waveRows[0];
@@ -337,8 +339,8 @@ export async function repairTreasuryMintsForWave(waveNum: number): Promise<{ ass
 
   const { rows: recipientRows } = await pool.query<{ addr: string }>(
     `SELECT DISTINCT treasury_recipient AS addr FROM nft_waves
-       WHERE wave_number = $1 AND treasury_recipient IS NOT NULL`,
-    [waveNum],
+       WHERE wave_number = $1 AND collection_id = $2 AND treasury_recipient IS NOT NULL`,
+    [waveNum, collectionId],
   );
 
   const tokenIdSet = new Set<number>();
@@ -436,7 +438,7 @@ export async function repairTreasuryMintsForWave(waveNum: number): Promise<{ ass
   }
 
   if (assigned > 0 && startingIndex != null) {
-    await _syncRevealedMetadata(waveNum);
+    await _syncRevealedMetadata(waveNum, collectionId);
   }
 
   console.log(`[treasury-repair] Wave ${waveNum}: assigned=${assigned}, revealed=${revealed}`);
