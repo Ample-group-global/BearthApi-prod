@@ -544,7 +544,7 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
 router.post("/sync-records", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
-    const { jobId, force } = req.body ?? {};
+    const { jobId } = req.body ?? {};
     if (!jobId?.trim()) { res.status(422).json({ error: "jobId is required." }); return; }
     const { rows } = await pool.query(
       "SELECT id, status FROM nft_generation_jobs WHERE id = $1::uuid",
@@ -555,19 +555,8 @@ router.post("/sync-records", async (req, res, next) => {
       res.status(409).json({ error: `Job status is '${rows[0].status}' — must be 'complete' before syncing to NFT Records.` });
       return;
     }
-    try {
-      const synced = await syncGeneratedItemsToNftRecords(jobId, Boolean(force));
-      res.json({ synced });
-    } catch (e) {
-      // nft_records already holds a different collection's data — a real
-      // conflict the caller can resolve (clear it, or pass force), not a
-      // server error.
-      if (e instanceof Error && e.message.includes("already holds data for")) {
-        res.status(409).json({ error: e.message });
-        return;
-      }
-      throw e;
-    }
+    const synced = await syncGeneratedItemsToNftRecords(jobId);
+    res.json({ synced });
   } catch (e) { next(e); }
 });
 

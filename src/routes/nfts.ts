@@ -12,13 +12,14 @@ router.get("/", async (req, res, next) => {
     const {
       search, owner_address, delivery_status, stage, revealed, minted,
       wave_id, wave_number, minted_from, minted_to, mint_type, rarity_tier,
-      limit, offset, sort_by, sort_dir,
+      collection_id, limit, offset, sort_by, sort_dir,
     } = req.query as Record<string, string>;
 
     const VALID_MINT_TYPES = new Set(["free", "paid", "admin", "treasury"]);
     const VALID_RARITY_TIERS = new Set(["legendary", "epic", "rare", "common"]);
 
     const ETH_ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+    const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
     const result = await nftService.listNft({
       search: search || null,
       ownerAddress: (owner_address && ETH_ADDR_RE.test(owner_address)) ? owner_address : null,
@@ -32,6 +33,7 @@ router.get("/", async (req, res, next) => {
       mintedTo: minted_to || null,
       mintType: (mint_type && VALID_MINT_TYPES.has(mint_type)) ? mint_type : null,
       rarityTier: (rarity_tier && VALID_RARITY_TIERS.has(rarity_tier.toLowerCase())) ? rarity_tier.toLowerCase() : null,
+      collectionId: (collection_id && UUID_RE.test(collection_id)) ? collection_id : null,
       limit: limit ? Number(limit) : 20,
       offset: offset ? Number(offset) : 0,
       sortBy: sort_by || null,

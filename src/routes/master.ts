@@ -10,17 +10,28 @@ const router = Router();
 // — nothing here is a new data source, just exposing what already exists.
 router.get("/", requireAdmin, async (req, res, next) => {
   try {
-    const { rows } = await pool.query<{ id: string; category: string; code: string; label: string }>(
-      `SELECT id, category, code, label FROM lookup_values
-       WHERE category IN ('nft_stage', 'nft_type', 'delivery_status') AND is_active = true
-       ORDER BY category, sort_order, label`,
-    );
+    const [{ rows }, { rows: collectionRows }] = await Promise.all([
+      pool.query<{ id: string; category: string; code: string; label: string }>(
+        `SELECT id, category, code, label FROM lookup_values
+         WHERE category IN ('nft_stage', 'nft_type', 'delivery_status') AND is_active = true
+         ORDER BY category, sort_order, label`,
+      ),
+      // Only collections actually synced into nft_records — a collection
+      // that only exists in nft_generation_jobs (never synced) has nothing
+      // to show under this filter yet.
+      pool.query<{ id: string; name: string }>(
+        `SELECT DISTINCT nc.id, nc.name FROM nft_collections nc
+         JOIN nft_records nr ON nr.collection_id = nc.id
+         ORDER BY nc.name`,
+      ),
+    ]);
     const byCategory = (category: string) =>
       rows.filter(r => r.category === category).map(r => ({ id: r.id, code: r.code, name: r.label }));
     res.json({
       nftStages: byCategory("nft_stage"),
       nftTypes: byCategory("nft_type"),
       deliveryStatuses: byCategory("delivery_status"),
+      collections: collectionRows,
     });
   } catch (e) { next(e); }
 });

@@ -507,31 +507,14 @@ export async function batchUpdateItemIpfsCids(params: {
 // to promote just that job's items, or omit it to sweep every job — when
 // sweeping all jobs, DISTINCT ON + created_at DESC picks the most recent
 // item per edition_number in case more than one job produced that edition.
-export async function syncGeneratedItemsToNftRecords(jobId?: string, force = false): Promise<number> {
-  // nft_records is meant to hold exactly one collection's data at a time —
-  // syncing a second collection into it used to just upsert on top,
-  // silently leaving a mix of two collections' rows behind. Block that
-  // unless the caller explicitly opts in with force (e.g. after
-  // deliberately clearing nft_records to switch to a new collection).
-  if (jobId && !force) {
-    const { rows: existingJobRows } = await pool.query(
-      `SELECT DISTINCT gi.job_id FROM nft_records nr
-       JOIN nft_generated_items gi ON gi.id = nr.generated_item_id
-       WHERE nr.generated_item_id IS NOT NULL AND gi.job_id <> $1::uuid`,
-      [jobId],
-    );
-    if (existingJobRows.length) {
-      const { rows: collRows } = await pool.query(
-        `SELECT DISTINCT c.name FROM nft_generated_items gi
-         JOIN nft_generation_jobs j ON j.id = gi.job_id
-         JOIN nft_collections c ON c.id = j.collection_id
-         WHERE gi.job_id = ANY($1::uuid[])`,
-        [existingJobRows.map(r => r.job_id)],
-      );
-      const names = collRows.map(r => r.name).join(", ") || "a different collection";
-      throw new Error(`nft_records already holds data for ${names}. Clear it first (or pass force) before syncing a different collection.`);
-    }
-  }
+export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<number> {
+  // nft_records now holds multiple collections' data side by side, scoped by
+  // collection_id (see uq_nft_records_collection_serial: UNIQUE(collection_id,
+  // serial_number)) -- each collection independently numbers #1..#N, so
+  // scoping the uniqueness by collection is what actually makes coexistence
+  // safe. The old single-collection block that used to live here (with a
+  // `force` escape hatch) is no longer needed now that collisions can't
+  // happen across collections.
 
   const { rows: lookupRows } = await pool.query(
     `SELECT id, category, code FROM lookup_values
@@ -554,26 +537,30 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string, force = fal
   const { rows: items } = jobId
     ? await pool.query(
         `SELECT gi.id AS generated_item_id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
+           gj.collection_id,
            COALESCE(jsonb_object_agg(nit.trait_type, nit.trait_value) FILTER (WHERE nit.trait_type IS NOT NULL), '{}'::jsonb) AS traits
          FROM nft_generated_items gi
+         JOIN nft_generation_jobs gj ON gj.id = gi.job_id
          LEFT JOIN nft_item_traits nit ON nit.item_id = gi.id
          WHERE gi.job_id = $1::uuid
            AND gi.ipfs_image_cid    IS NOT NULL
            AND gi.ipfs_metadata_cid IS NOT NULL
-         GROUP BY gi.id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json
+         GROUP BY gi.id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json, gj.collection_id
          ORDER BY gi.edition_number ASC`,
         [jobId],
       )
     : await pool.query(
-        `SELECT DISTINCT ON (gi.edition_number)
+        `SELECT DISTINCT ON (gj.collection_id, gi.edition_number)
            gi.id AS generated_item_id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
+           gj.collection_id,
            COALESCE(jsonb_object_agg(nit.trait_type, nit.trait_value) FILTER (WHERE nit.trait_type IS NOT NULL), '{}'::jsonb) AS traits
          FROM nft_generated_items gi
+         JOIN nft_generation_jobs gj ON gj.id = gi.job_id
          LEFT JOIN nft_item_traits nit ON nit.item_id = gi.id
          WHERE gi.ipfs_image_cid    IS NOT NULL
            AND gi.ipfs_metadata_cid IS NOT NULL
-         GROUP BY gi.id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json, gi.created_at
-         ORDER BY gi.edition_number ASC, gi.created_at DESC`,
+         GROUP BY gi.id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json, gi.created_at, gj.collection_id
+         ORDER BY gj.collection_id ASC, gi.edition_number ASC, gi.created_at DESC`,
       );
 
   if (!items.length) return 0;
@@ -593,6 +580,7 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string, force = fal
     if (meta.tier != null) traits['Rarity Tier'] = String(meta.tier);
     return {
       serial_number: `#${item.edition_number}`,
+      collection_id: item.collection_id,
       stage_id: genesisStageId,
       delivery_status_id: pendingStatusId,
       generated_item_id: item.generated_item_id,
@@ -608,9 +596,10 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string, force = fal
   });
 
   const { rowCount } = await pool.query(
-    `INSERT INTO nft_records (serial_number, stage_id, delivery_status_id, generated_item_id, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier)
+    `INSERT INTO nft_records (serial_number, collection_id, stage_id, delivery_status_id, generated_item_id, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier)
      SELECT
        x.serial_number,
+       x.collection_id::uuid,
        x.stage_id::uuid,
        x.delivery_status_id::uuid,
        x.generated_item_id::uuid,
@@ -623,11 +612,11 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string, force = fal
        x.rarity_rank,
        x.rarity_tier
      FROM json_to_recordset($1::json) AS x(
-       serial_number text, stage_id text, delivery_status_id text, generated_item_id text,
+       serial_number text, collection_id text, stage_id text, delivery_status_id text, generated_item_id text,
        image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text, blind_box_uri text, traits jsonb,
        rarity_score numeric, rarity_rank int, rarity_tier text
      )
-     ON CONFLICT (serial_number) DO UPDATE SET
+     ON CONFLICT (collection_id, serial_number) DO UPDATE SET
        image_ipfs_hash    = EXCLUDED.image_ipfs_hash,
        metadata_ipfs_hash = EXCLUDED.metadata_ipfs_hash,
        metadata_uri       = EXCLUDED.metadata_uri,

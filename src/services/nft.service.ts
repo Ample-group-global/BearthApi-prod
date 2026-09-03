@@ -28,6 +28,7 @@ export async function listNft(params: {
   mintedTo?: string | null;
   mintType?: string | null;
   rarityTier?: string | null;
+  collectionId?: string | null;
   limit?: number;
   offset?: number;
   sortBy?: string | null;
@@ -37,6 +38,7 @@ export async function listNft(params: {
     search = null, ownerAddress = null, deliveryStatusCode = null, stageCode = null,
     revealed = null, minted = null, waveId = null, waveNumber = null,
     mintedFrom = null, mintedTo = null, mintType = null, rarityTier = null,
+    collectionId = null,
     limit = 20, offset = 0, sortBy = null, sortDir = null,
   } = params;
 
@@ -49,6 +51,7 @@ export async function listNft(params: {
   const { rows } = await pool.query(
     `SELECT
        nr.id, nr.serial_number, nr.token_id,
+       nr.collection_id, nr.collection_name,
        nr.image_ipfs_hash, nr.metadata_uri, nr.blind_box_uri,
        nr.is_revealed, nr.revealed_at, nr.minted_at, nr.sold_at,
        nr.owner_address, nr.traits,
@@ -83,9 +86,10 @@ export async function listNft(params: {
        AND ($12::VARCHAR IS NULL OR nr.mint_type = $12)
        AND ($13::VARCHAR IS NULL OR LOWER(nr.rarity_tier) = LOWER($13))
        AND ($14::TEXT IS NULL OR LOWER(nr.owner_address) = LOWER($14))
+       AND ($15::UUID IS NULL OR nr.collection_id = $15::UUID)
      ORDER BY ${orderBy}
      LIMIT $7 OFFSET $8`,
-    [search, deliveryStatusCode, stageCode, revealed, waveId, waveNumber, limit, offset, minted, mintedFrom, mintedTo, mintType, rarityTier, ownerAddress],
+    [search, deliveryStatusCode, stageCode, revealed, waveId, waveNumber, limit, offset, minted, mintedFrom, mintedTo, mintType, rarityTier, ownerAddress, collectionId],
   );
   const { rows: statsRows } = await pool.query(
     `SELECT
@@ -100,7 +104,9 @@ export async function listNft(params: {
       COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL)                        AS minted_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'sold')               AS sold_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'delivered')          AS delivered_count
-    FROM v_nft_records nr`,
+    FROM v_nft_records nr
+    WHERE ($1::UUID IS NULL OR nr.collection_id = $1::UUID)`,
+    [collectionId],
   );
   const st = statsRows[0] ?? {};
 
