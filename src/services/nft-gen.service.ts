@@ -689,6 +689,19 @@ async function getBlindboxUri(): Promise<string | null> {
   return cid ? `ipfs://${cid}` : null;
 }
 
+// Admin UI thumbnail, distinct from blind_box_uri above: that field is the
+// on-chain-facing metadata URI (name/description/image/animation_url), but
+// an <img> tag needs the actual picture, not a JSON document. Reads the same
+// shared blindbox.json and returns just its `image` field as a gateway URL.
+export async function getBlindboxImageUrl(): Promise<string | null> {
+  const bucket = process.env.FILEBASE_ASSETS_BUCKET || process.env.FILEBASE_LAYERS_BUCKET;
+  if (!bucket) return null;
+  const { body } = await filebaseGetJson(bucket, "AssetBlindbox/blindbox.json");
+  const image = typeof body.image === "string" ? body.image : null;
+  const imageCid = image?.match(/^ipfs:\/\/(\S+)$/)?.[1];
+  return imageCid ? `${FILEBASE_GATEWAY}/${imageCid}` : null;
+}
+
 function parseFilebaseTraits(json: Record<string, unknown>): Record<string, unknown> {
   const raw = (json.attributes ?? json.traits ?? {}) as unknown;
   if (Array.isArray(raw)) {

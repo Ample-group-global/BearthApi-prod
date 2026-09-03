@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAdmin } from "../adminAuth";
 import pool from "../pool";
+import { getBlindboxImageUrl } from "../services/nft-gen.service";
 
 const router = Router();
 
@@ -10,7 +11,7 @@ const router = Router();
 // — nothing here is a new data source, just exposing what already exists.
 router.get("/", requireAdmin, async (req, res, next) => {
   try {
-    const [{ rows }, { rows: collectionRows }] = await Promise.all([
+    const [{ rows }, { rows: collectionRows }, blindBoxImageUrl] = await Promise.all([
       pool.query<{ id: string; category: string; code: string; label: string }>(
         `SELECT id, category, code, label FROM lookup_values
          WHERE category IN ('nft_stage', 'nft_type', 'delivery_status') AND is_active = true
@@ -24,6 +25,7 @@ router.get("/", requireAdmin, async (req, res, next) => {
          JOIN nft_records nr ON nr.collection_id = nc.id
          ORDER BY nc.name`,
       ),
+      getBlindboxImageUrl().catch(() => null),
     ]);
     const byCategory = (category: string) =>
       rows.filter(r => r.category === category).map(r => ({ id: r.id, code: r.code, name: r.label }));
@@ -32,6 +34,7 @@ router.get("/", requireAdmin, async (req, res, next) => {
       nftTypes: byCategory("nft_type"),
       deliveryStatuses: byCategory("delivery_status"),
       collections: collectionRows,
+      blindBoxImageUrl,
     });
   } catch (e) { next(e); }
 });
