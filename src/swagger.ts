@@ -549,7 +549,7 @@ const options: swaggerJsdoc.Options = {
           tags: ["Presale - Waves"],
           summary: "Create an NFT wave",
           security: [{ bearerAuth: [] }],
-          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["waveNumber", "name", "quantity"], properties: { waveNumber: { type: "integer" }, name: { type: "string" }, quantity: { type: "integer" }, defaultPriceEth: { type: "number" }, saleMethod: { type: "string", enum: ["fixed_price", "english_auction", "free_mint"] }, scheduledStart: { type: "string", format: "date-time" }, scheduledEnd: { type: "string", format: "date-time" }, status: { type: "string", enum: ["upcoming", "active", "paused", "completed", "cancelled"] } } } } } },
+          requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["waveNumber", "name", "quantity"], properties: { waveNumber: { type: "integer" }, name: { type: "string" }, quantity: { type: "integer" }, defaultPriceEth: { type: "number" }, saleMethod: { type: "string", enum: ["fixed_price", "free_mint"] }, scheduledStart: { type: "string", format: "date-time" }, scheduledEnd: { type: "string", format: "date-time" }, status: { type: "string", enum: ["upcoming", "active", "paused", "completed", "cancelled"] } } } } } },
           responses: { "201": { description: "Wave created" } },
         },
       },
