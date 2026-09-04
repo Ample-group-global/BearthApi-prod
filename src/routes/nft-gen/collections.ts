@@ -3,6 +3,7 @@ import { Router } from "express";
 import { requirePermission } from "../../adminAuth";
 import pool from "../../pool";
 import * as svc from "../../services/nft-gen.service";
+import { deployCollectionContract, DeployNetwork } from "../../services/contract-deploy.service";
 
 const router = Router();
 
@@ -191,6 +192,36 @@ router.delete("/:id", async (req, res, next) => {
     const result = await svc.deleteCollection(req.params.id);
     res.json(result);
   } catch (e) { next(e); }
+});
+
+// ── Deploy a dedicated smart contract for this collection ───────────────────
+// New collections only -- existing collections (Bearth V1, etc.) keep using
+// the shared global CONTRACT_ADDRESS and are untouched by this. Signer keys
+// live only in server-side env vars (DEPLOY_SEPOLIA_*/DEPLOY_MAINNET_*),
+// never accepted here from the request body.
+router.post("/:id/deploy-contract", async (req, res, next) => {
+  try {
+    const { userId } = requirePermission(req, "nft_gen.manage_collections");
+    const { network, blindBoxUri } = req.body ?? {};
+    if (network !== "sepolia" && network !== "mainnet") {
+      res.status(422).json({ error: "network must be 'sepolia' or 'mainnet'." }); return;
+    }
+    if (!blindBoxUri?.trim()) {
+      res.status(422).json({ error: "blindBoxUri is required." }); return;
+    }
+    const result = await deployCollectionContract({
+      collectionId: req.params.id,
+      network: network as DeployNetwork,
+      blindBoxUri,
+      deployedBy: userId,
+    });
+    res.status(201).json(result);
+  } catch (e: any) {
+    if (e?.message && /not found|already has|required|too low|not configured|Refusing/.test(e.message)) {
+      res.status(422).json({ error: e.message }); return;
+    }
+    next(e);
+  }
 });
 
 // ── Layers nested under collection ──────────────────────────────────────────
