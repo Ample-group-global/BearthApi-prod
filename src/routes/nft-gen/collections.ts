@@ -103,6 +103,70 @@ router.get("/sync-status", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
+// ── Dashboard overview: per-collection minted/sold/revenue + active wave ──────
+// Reuses v_wave_schedule_status (patch_v08) for wave status instead of
+// re-deriving it -- the Waves page's own "ready to reveal" state pulls from
+// multiple sources (a separate schedule-status endpoint + client logic), too
+// involved to safely re-derive here without risking a subtly different
+// answer; this endpoint sticks to what's cleanly computable from one view:
+// which wave (if any) is actively selling right now, per collection.
+router.get("/dashboard-stats", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const { rows } = await pool.query(`
+      SELECT
+        c.id, c.name, c.symbol, c.supply, c.created_at,
+        COALESCE(rec.records_count, 0) AS minted_count,
+        COALESCE(wv.total_sold, 0)     AS total_sold,
+        COALESCE(wv.eth_raised, 0)     AS eth_raised,
+        aw.wave_number AS active_wave_number,
+        aw.wave_name    AS active_wave_name
+      FROM nft_collections c
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*) AS records_count FROM nft_records WHERE collection_id = c.id
+      ) rec ON true
+      LEFT JOIN LATERAL (
+        SELECT SUM(sold_count) AS total_sold,
+               SUM(sold_count * COALESCE(default_price_eth, 0)) AS eth_raised
+        FROM nft_waves WHERE collection_id = c.id
+      ) wv ON true
+      LEFT JOIN LATERAL (
+        SELECT wave_number, wave_name FROM v_wave_schedule_status
+        WHERE collection_id = c.id AND status = 'active'
+        ORDER BY wave_number LIMIT 1
+      ) aw ON true
+      ORDER BY c.created_at DESC
+    `);
+
+    const n = (v: unknown) => Number(v ?? 0);
+    const collections = rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      symbol: r.symbol,
+      supply: n(r.supply),
+      createdAt: r.created_at,
+      mintedCount: n(r.minted_count),
+      totalSold: n(r.total_sold),
+      ethRaised: n(r.eth_raised),
+      activeWave: r.active_wave_number != null
+        ? { waveNumber: r.active_wave_number, name: r.active_wave_name }
+        : null,
+    }));
+
+    res.json({
+      totals: {
+        collections: collections.length,
+        supply: collections.reduce((s, c) => s + c.supply, 0),
+        minted: collections.reduce((s, c) => s + c.mintedCount, 0),
+        sold: collections.reduce((s, c) => s + c.totalSold, 0),
+        ethRaised: collections.reduce((s, c) => s + c.ethRaised, 0),
+        activeWaves: collections.filter(c => c.activeWave).length,
+      },
+      collections,
+    });
+  } catch (e) { next(e); }
+});
+
 router.get("/:id", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
