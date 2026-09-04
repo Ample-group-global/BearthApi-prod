@@ -42,12 +42,13 @@ router.get("/sync-status", async (req, res, next) => {
         c.created_at,
         j.id            AS job_id,
         j.status        AS job_status,
+        j.export_bucket AS export_bucket,
         COALESCE(fi.synced_count, 0)   AS filebase_count,
         COALESCE(fi.total_count,  0)   AS filebase_total,
         COALESCE(rec.records_count, 0) AS records_count
       FROM nft_collections c
       LEFT JOIN LATERAL (
-        SELECT id, status
+        SELECT id, status, export_bucket
         FROM nft_generation_jobs
         WHERE collection_id = c.id AND status = 'complete'
         ORDER BY created_at DESC
@@ -92,6 +93,7 @@ router.get("/sync-status", async (req, res, next) => {
           createdAt: r.created_at,
           jobId: r.job_id ?? null,
           jobStatus: r.job_status ?? null,
+          exportBucket: r.export_bucket ?? null,
           filebaseCount: fbCount,
           filebaseTotal: n(r.filebase_total),
           recordsCount: recCount,
