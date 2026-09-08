@@ -54,7 +54,7 @@ router.get("/tokens", async (req, res, next) => {
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "200"), 10) || 200, 1), 500);
 
     const { rows } = await pool.query(
-      `SELECT token_id, owner_address, on_chain_wave_num, rarity_tier,
+      `SELECT token_id, owner_address, on_chain_wave_num, rarity_tier, traits,
               is_revealed, image_ipfs_hash, blind_box_uri, minted_at
          FROM nft_records
         WHERE owner_address = $1 AND token_id IS NOT NULL
@@ -98,6 +98,7 @@ router.get("/tokens", async (req, res, next) => {
           // box (a high-rarity token would be identifiable by tokenId before
           // reveal). Masked here rather than relying on the frontend to hide it.
           rarity_tier: r.is_revealed ? r.rarity_tier : null,
+          traits: r.is_revealed ? r.traits : null,
           is_revealed: r.is_revealed,
           // Same masking as rarity_tier -- image_ipfs_hash is the real,
           // generation-time artwork hash for the row this token got linked to;
