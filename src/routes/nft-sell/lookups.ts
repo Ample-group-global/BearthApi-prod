@@ -1,6 +1,6 @@
 import { Router } from "express";
 import pool from "../../pool";
-import { requireAdmin } from "../../adminAuth";
+import { requirePermission } from "../../adminAuth";
 
 const router = Router();
 
@@ -9,8 +9,9 @@ const router = Router();
 // page can show "Free Mint" instead of the raw DB code. Was previously called
 // by the frontend but never implemented here, so it silently 404'd and the
 // table fell back to printing the raw snake_case code.
-router.get("/wave-sale-methods", requireAdmin, async (_req, res, next) => {
+router.get("/wave-sale-methods", async (req, res, next) => {
   try {
+    requirePermission(req, "nft_waves.view");
     const { rows } = await pool.query<{ code: string; label: string }>(
       `SELECT code, label FROM lookup_values
        WHERE category = 'nft_wave_sale_method' AND is_active = true

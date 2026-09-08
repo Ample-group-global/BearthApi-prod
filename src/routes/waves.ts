@@ -7,6 +7,34 @@ import { logger } from "../logger";
 
 const router = Router();
 
+// GET /api/waves/public – wave catalogue (name, sale method, price, qty) for the live
+// mint site. Public, no auth -- the mint site has no admin session. Sourced from the
+// Bearth Test1 collection: the DB has no formal link from collection -> live contract
+// address (nft_collections.contract_address is null for all three test collections),
+// and Test1 is the collection explicitly used for the current Sepolia E2E effort.
+router.get("/public", async (_req, res, next) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT w.wave_number, w.name, w.sale_method, w.default_price_eth, w.quantity
+         FROM nft_waves w
+         JOIN nft_collections c ON c.id = w.collection_id
+        WHERE c.symbol = 'BRTEST1'
+        ORDER BY w.wave_number`,
+    );
+    res.json({
+      waves: rows.map((r) => ({
+        waveNumber: Number(r.wave_number),
+        name: r.name as string,
+        saleMethod: r.sale_method as string,
+        priceEth: r.default_price_eth !== null ? Number(r.default_price_eth) : 0,
+        qty: Number(r.quantity),
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // PUT /api/waves/:id – update wave DB fields (schedule, price, status, tier prices, reveal date)
 router.put("/:id", requireAdmin, async (req, res, next) => {
   try {

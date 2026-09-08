@@ -9,6 +9,7 @@ import adminRolesRouter from "./routes/admin/roles";
 import adminPermissionsRouter from "./routes/admin/permissions";
 import adminMenusRouter from "./routes/admin/menus";
 import adminUsersRouter from "./routes/admin/users";
+import adminOverviewRouter from "./routes/admin/overview";
 import nftGenRouter from "./routes/nft-gen/index";
 import filebaseRouter from "./routes/filebase";
 import nftSellWavesRouter from "./routes/nft-sell/waves";
@@ -17,6 +18,10 @@ import wavesRouter from "./routes/waves";
 import nftsRouter from "./routes/nfts";
 import nftChainRouter from "./routes/nft-chain";
 import masterRouter from "./routes/master";
+import customersRouter from "./routes/customers";
+import walletsRouter from "./routes/wallets";
+import referrersRouter from "./routes/referrers";
+import whitelistRouter from "./routes/whitelist";
 import pool, { startPoolKeepalive } from "./pool";
 import { runPendingMigrations } from "./services/auto-migrate.service";
 import { startEventListeners } from "./services/contract.service";
@@ -87,6 +92,7 @@ app.use("/api/admin/roles", adminRolesRouter);
 app.use("/api/admin/permissions", adminPermissionsRouter);
 app.use("/api/admin/menus", adminMenusRouter);
 app.use("/api/admin/users", adminUsersRouter);
+app.use("/api/admin/overview", adminOverviewRouter);
 app.use("/api/nft-gen", nftGenRouter);
 app.use("/api/filebase", filebaseRouter);
 // Mounted at /api/nft-sell/waves, not /api/nft-sell -- every route inside
@@ -104,6 +110,10 @@ app.use("/api/waves", wavesRouter);
 app.use("/api/nfts", nftsRouter);
 app.use("/api/nft-chain", nftChainRouter);
 app.use("/api/master", masterRouter);
+app.use("/api/customers", customersRouter);
+app.use("/api/wallets", walletsRouter);
+app.use("/api/referrers", referrersRouter);
+app.use("/api/whitelist", whitelistRouter);
 
 app.get("/api/health", async (_req, res) => {
   try {

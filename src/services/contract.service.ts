@@ -3,6 +3,7 @@ import pool from "../pool";
 import BearthNFT_ABI from "../abi/BearthNFT.abi.json";
 import { getProvider } from "../utils/contract-factory";
 import { logNftActivity } from "./nft-log.service";
+import { HttpError } from "../errors";
 
 let _contractRO: Contract | null = null;
 let _contractSigned: Contract | null = null;
@@ -111,8 +112,13 @@ export async function callContract(
     await syncReceiptLogs(receipt);
     return receipt;
   } catch (err) {
+    // Use HttpError (not a plain Error) so the decoded, human-readable revert
+    // reason actually reaches the API response -- errorHandler.ts only
+    // preserves the message for HttpError instances; a plain Error here was
+    // silently discarded into a generic "Something went wrong" 500, hiding
+    // e.g. "Caller does not have the required role" behind an unhelpful message.
     const readable = decodeContractError(err);
-    if (readable) throw new Error(readable);
+    if (readable) throw new HttpError(400, readable);
     throw err;
   }
 }
