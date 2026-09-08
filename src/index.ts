@@ -14,6 +14,7 @@ import nftGenRouter from "./routes/nft-gen/index";
 import filebaseRouter from "./routes/filebase";
 import nftSellWavesRouter from "./routes/nft-sell/waves";
 import nftSellLookupsRouter from "./routes/nft-sell/lookups";
+import nftSellCollectionRouter from "./routes/nft-sell/collection";
 import wavesRouter from "./routes/waves";
 import nftsRouter from "./routes/nfts";
 import nftChainRouter from "./routes/nft-chain";
@@ -106,6 +107,7 @@ app.use("/api/filebase", filebaseRouter);
 // "Total Waves: 0" with an empty table despite waves existing in the DB.
 app.use("/api/nft-sell/waves", nftSellWavesRouter);
 app.use("/api/nft-sell/lookups", nftSellLookupsRouter);
+app.use("/api/nft-sell/collection", nftSellCollectionRouter);
 app.use("/api/waves", wavesRouter);
 app.use("/api/nfts", nftsRouter);
 app.use("/api/nft-chain", nftChainRouter);
