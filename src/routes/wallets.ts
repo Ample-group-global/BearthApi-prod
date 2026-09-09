@@ -5,6 +5,7 @@ import { requirePermission } from "../adminAuth";
 import { HttpError } from "../errors";
 import { contractBlockAccount } from "../services/contract.service";
 import { autoRegisterAndSync } from "../services/customer-whitelist.service";
+import { keepAlive } from "../utils/taskProgress";
 
 const router = Router();
 
@@ -32,8 +33,12 @@ router.post("/connect", connectLimit, async (req: Request, res: Response, next: 
       return;
     }
     // Auto-register: new wallets get a stub customer user created and Merkle root rebuilt.
+    // keepAlive() (Vercel's waitUntil) covers the WHOLE call, not just the
+    // on-chain push inside it -- the DB insert this kicks off is also
+    // unawaited here, so without it Vercel could tear the function down
+    // before even that completes, not just before the chain push finishes.
     if (row.registered || !row.is_whitelisted) {
-      autoRegisterAndSync(address, "wallet_connect").catch(() => null);
+      keepAlive(autoRegisterAndSync(address, "wallet_connect").catch(() => null));
     }
     res.json({
       address: row.address as string,
