@@ -48,6 +48,65 @@ export function triggerChainSync(): void {
   );
 }
 
+// ── Reconciliation / self-healing ───────────────────────────────────────────
+
+export interface ReconcileResult {
+  checkedAt: string;
+  wasInSync: boolean;
+  healed: boolean;
+  merkleRoot: string | null;
+  onchainRootBefore: string | null;
+  error?: string;
+}
+
+// Compares whitelist_state's intended root against the last-confirmed
+// on-chain root and re-pushes if they've drifted -- the auto-healing half of
+// the 2026-09-09 fix. keepAlive() alone stops NEW drift from being
+// introduced; this actively repairs any drift that still occurs for some
+// other reason (RPC outage, operator wallet out of gas, etc.), instead of
+// leaving real customers blocked until someone notices and runs a manual
+// fix. Safe to call repeatedly/concurrently -- rebuildMerkleAndPush() always
+// recomputes from the live customer_wallets table, and re-pushing the same
+// root twice is a harmless no-op on-chain (just wasted gas), not a
+// correctness risk.
+export async function reconcileWhitelistRoot(): Promise<ReconcileResult> {
+  const checkedAt = new Date().toISOString();
+  const { rows } = await pool.query("SELECT * FROM v_whitelist_sync_status");
+  const status = rows[0] as
+    | { merkle_root: string | null; onchain_root: string | null; in_sync: boolean }
+    | undefined;
+
+  if (!status || status.in_sync) {
+    return {
+      checkedAt,
+      wasInSync: true,
+      healed: false,
+      merkleRoot: status?.merkle_root ?? null,
+      onchainRootBefore: status?.onchain_root ?? null,
+    };
+  }
+
+  try {
+    await rebuildMerkleAndPush();
+    return {
+      checkedAt,
+      wasInSync: false,
+      healed: true,
+      merkleRoot: status.merkle_root,
+      onchainRootBefore: status.onchain_root,
+    };
+  } catch (err) {
+    return {
+      checkedAt,
+      wasInSync: false,
+      healed: false,
+      merkleRoot: status.merkle_root,
+      onchainRootBefore: status.onchain_root,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 // ── Auto-register (wallet_connect path) ───────────────────────────────────────
 
 // Creates a stub customer user for a wallet that just connected for the first time.

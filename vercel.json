@@ -6,5 +6,11 @@
     "api/index.ts": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/whitelist/reconcile",
+      "schedule": "*/10 * * * *"
+    }
+  ]
 }
