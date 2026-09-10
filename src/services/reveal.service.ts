@@ -3,6 +3,7 @@ import { logNftActivity } from "./nft-log.service";
 import { ethers } from "ethers";
 import GenesisABI from "../abi/BearthNFT.abi.json";
 import CoordinatorABI from "../abi/BearthRevealCoordinator.abi.json";
+import { resolveCollectionContractAddress } from "./contract.service";
 
 function getSigner(): ethers.Wallet {
   const rpcUrl = process.env.ETH_RPC_URL;
@@ -12,10 +13,12 @@ function getSigner(): ethers.Wallet {
   return new ethers.Wallet(privateKey, provider);
 }
 
-function getGenesisContract(signer: ethers.Wallet): ethers.Contract {
-  const addr = process.env.CONTRACT_ADDRESS;
-  if (!addr) throw new Error("CONTRACT_ADDRESS required for reveal");
-  return new ethers.Contract(addr, GenesisABI, signer);
+// contractAddress is always resolved per-collection by the caller (single
+// source of truth: nft_collections.contract_address) -- see 2026-09-10 fix,
+// this used to silently read the single global CONTRACT_ADDRESS env var
+// regardless of which collection's wave was being revealed.
+function getGenesisContract(signer: ethers.Wallet, contractAddress: string): ethers.Contract {
+  return new ethers.Contract(contractAddress, GenesisABI, signer);
 }
 
 function getCoordinatorContract(signer: ethers.Wallet): ethers.Contract | null {
@@ -44,14 +47,15 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
     );
   }
 
-  if (!process.env.CONTRACT_ADDRESS || !process.env.ETH_RPC_URL || !process.env.FIXED_PRIVATE_KEY) {
-    console.log(`[reveal] Wave ${waveNum}: no contract env vars — DB-only reveal (dev mode)`);
+  if (!process.env.ETH_RPC_URL || !process.env.FIXED_PRIVATE_KEY) {
+    console.log(`[reveal] Wave ${waveNum}: no signer env vars — DB-only reveal (dev mode)`);
     await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, null, null, null);
     return null;
   }
 
+  const contractAddress = await resolveCollectionContractAddress(collectionId);
   const signer = getSigner();
-  const nft = getGenesisContract(signer);
+  const nft = getGenesisContract(signer, contractAddress);
   const coordinator = getCoordinatorContract(signer);
 
   if (coordinator) {
@@ -308,12 +312,12 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
 }
 
 export async function repairTreasuryMintsForWave(waveNum: number, collectionId: string): Promise<{ assigned: number; revealed: number }> {
-  const CONTRACT_ADDR = process.env.CONTRACT_ADDRESS!;
   const RPC_URL = process.env.ETH_RPC_URL ?? process.env.ETH_RPC_URL_MAINNET ?? "";
-  if (!CONTRACT_ADDR || !RPC_URL) {
-    console.warn(`[treasury-repair] Wave ${waveNum}: skipped — ETH_RPC_URL or CONTRACT_ADDRESS not set`);
+  if (!RPC_URL) {
+    console.warn(`[treasury-repair] Wave ${waveNum}: skipped — ETH_RPC_URL not set`);
     return { assigned: 0, revealed: 0 };
   }
+  const CONTRACT_ADDR = await resolveCollectionContractAddress(collectionId);
 
   const { rows: waveRows } = await pool.query<{ id: string; starting_index: number | null }>(
     `SELECT id, starting_index FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,

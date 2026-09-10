@@ -107,6 +107,46 @@ export async function reconcileWhitelistRoot(): Promise<ReconcileResult> {
   }
 }
 
+// ── Admin-triggered explicit push (Whitelist tab "Push to Chain" button) ───────
+
+export interface PushChainResult {
+  root: string;
+  txHash: string;
+}
+
+// Unlike rebuildMerkleAndPush() (always recomputes from customer_wallets),
+// this respects whitelist_state.manual_override -- if an admin explicitly set
+// a root via PUT /merkle-root, pushing must send THAT root, not silently
+// recompute over it. Runs synchronously (not keepAlive) since the admin UI
+// wants the txHash back to show in a toast, not a fire-and-forget.
+export async function pushEffectiveRootOnChain(): Promise<PushChainResult> {
+  const { rows } = await pool.query(
+    "SELECT merkle_root, manual_override FROM whitelist_state WHERE id = 1"
+  );
+  const state = rows[0] as { merkle_root: string | null; manual_override: boolean } | undefined;
+
+  let root: string;
+  if (state?.manual_override && state.merkle_root) {
+    root = state.merkle_root;
+  } else {
+    const { rows: addrRows } = await pool.query("SELECT * FROM whitelist_addresses_all()");
+    const addresses = addrRows.map((r: { address: string }) => r.address);
+    if (!addresses.length) throw new Error("No whitelisted addresses to push");
+    root = buildMerkleTree(addresses).root;
+    await pool.query("SELECT whitelist_state_update_root($1)", [root]);
+  }
+
+  try {
+    const receipt = await contractSetAllowlistRoot(root);
+    await pool.query("SELECT whitelist_state_record_push_attempt($1, true, NULL)", [root]);
+    return { root, txHash: receipt.hash };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await pool.query("SELECT whitelist_state_record_push_attempt($1, false, $2)", [root, message]);
+    throw err;
+  }
+}
+
 // ── Auto-register (wallet_connect path) ───────────────────────────────────────
 
 // Creates a stub customer user for a wallet that just connected for the first time.

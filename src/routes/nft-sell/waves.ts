@@ -10,7 +10,8 @@ import {
   contractSetWavePurchaseLimit,
   contractSetAllowlistRoot,
   resyncFromBlock,
-  getContractReadOnly,
+  getContractReadOnlyForCollection,
+  resolveCollectionContractAddress,
 } from "../../services/contract.service";
 import { getProvider } from "../../utils/contract-factory";
 import { executeWaveReveal, _syncRevealedMetadata } from "../../services/reveal.service";
@@ -47,7 +48,7 @@ router.get("/", async (req, res, next) => {
     const dbWaves: Record<string, unknown>[] = rows[0]?.waves ?? [];
 
     const chainResults = await Promise.allSettled(
-      [1, 2, 3, 4, 5, 6, 7].map(n => withChainTimeout(contractGetWaveInfo(n), 6000))
+      [1, 2, 3, 4, 5, 6, 7].map(n => withChainTimeout(contractGetWaveInfo(n, collectionId), 6000))
     );
 
     const waves = dbWaves.map((w: Record<string, unknown>) => {
@@ -130,11 +131,11 @@ router.get("/:num", async (req, res, next) => {
     const { rows } = await pool.query("SELECT nft_wave_get($1, $2) AS wave", [num, collectionId]);
     const wave = rows[0]?.wave;
     let onChain = null;
-    if (process.env.CONTRACT_ADDRESS && process.env.ETH_RPC_URL) {
+    if (process.env.ETH_RPC_URL) {
       try {
         const [info, purchaseLimit] = await Promise.all([
-          withChainTimeout(contractGetWaveInfo(num), 6000),
-          withChainTimeout(contractGetWavePurchaseLimit(num), 6000),
+          withChainTimeout(contractGetWaveInfo(num, collectionId), 6000),
+          withChainTimeout(contractGetWavePurchaseLimit(num, collectionId), 6000),
         ]);
         if (info) {
           onChain = {
@@ -212,7 +213,7 @@ router.put("/:num/schedule", async (req, res, next) => {
       }
     }
 
-    const receipt = await contractSetWaveSchedule(num, startUnix, endUnix);
+    const receipt = await contractSetWaveSchedule(num, startUnix, endUnix, collectionId);
     const startIso = new Date(startUnix * 1000).toISOString();
     const endIso = new Date(endUnix * 1000).toISOString();
     await pool.query(
@@ -286,7 +287,7 @@ router.put("/:num/purchase-limit", async (req, res, next) => {
     if (rows[0].is_revealed)
       return res.status(409).json({ error: `Wave ${num} has already been revealed — purchase limit cannot be changed.` });
 
-    const receipt = await contractSetWavePurchaseLimit(num, maxPerWallet);
+    const receipt = await contractSetWavePurchaseLimit(num, maxPerWallet, collectionId);
 
     // Mirror to DB
     await pool.query(
@@ -346,7 +347,7 @@ router.post("/:num/reveal", async (req, res, next) => {
     let autoTreasuryTxHash: string | null = null;
     if (stratRows[0]?.unsold_strategy === 'auto_treasury') {
       try {
-        const receipt = await contractTreasuryClose(num, null);
+        const receipt = await contractTreasuryClose(num, null, collectionId);
         autoTreasuryTxHash = receipt.hash;
         await pool.query(
           `UPDATE nft_records nr
@@ -402,9 +403,8 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
     if (!collectionId) return;
 
     const RPC_URL = process.env.ETH_RPC_URL;
-    const CONTRACT_ADDR = process.env.CONTRACT_ADDRESS;
-    if (!RPC_URL || !CONTRACT_ADDR)
-      return res.status(500).json({ error: "ETH_RPC_URL / CONTRACT_ADDRESS not set" });
+    if (!RPC_URL) return res.status(500).json({ error: "ETH_RPC_URL not set" });
+    const CONTRACT_ADDR = await resolveCollectionContractAddress(collectionId);
 
     const provider = new ethers.JsonRpcProvider(RPC_URL);
     const abi = [
@@ -482,24 +482,27 @@ router.get("/:num/treasury-close-estimate", async (req, res, next) => {
     const num = parseInt(req.params.num, 10);
     if (isNaN(num) || num < 1 || num > 7)
       return res.status(400).json({ error: "Wave number must be 1-7" });
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
 
     const privateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
     if (!privateKey) return res.status(500).json({ error: "Signer key not configured" });
 
     const provider = getProvider();
     const signer = new ethers.Wallet(privateKey, provider);
+    const contractRO = await getContractReadOnlyForCollection(collectionId);
 
     const [balanceWei, feeData, treasuryAddr] = await Promise.all([
       provider.getBalance(signer.address),
       provider.getFeeData(),
-      getContractReadOnly().treasuryWallet() as Promise<string>,
+      contractRO.treasuryWallet() as Promise<string>,
     ]);
 
     const gasPrice = feeData.gasPrice ?? BigInt(2_000_000_000);
 
     let estimatedGasWei = BigInt(300_000) * gasPrice; // conservative fallback
     try {
-      const gasUnits = await getContractReadOnly().treasuryClose.estimateGas(num, treasuryAddr, { from: signer.address });
+      const gasUnits = await contractRO.treasuryClose.estimateGas(num, treasuryAddr, { from: signer.address });
       estimatedGasWei = gasUnits * gasPrice;
     } catch {
       // estimateGas can fail if wave guards are not met — use fallback
@@ -565,7 +568,7 @@ router.post("/:num/treasury-close", async (req, res, next) => {
     let txHash: string | null = null;
     let alreadyClosedOnChain = false;
     try {
-      const onChain = await contractGetWaveInfo(num);
+      const onChain = await contractGetWaveInfo(num, collectionId);
       if (onChain?.closed) {
         alreadyClosedOnChain = true;
         console.log(`[treasury-close] Wave ${num} already closed on-chain — syncing DB only`);
@@ -575,7 +578,7 @@ router.post("/:num/treasury-close", async (req, res, next) => {
     }
 
     if (!alreadyClosedOnChain) {
-      const receipt = await contractTreasuryClose(num, null);
+      const receipt = await contractTreasuryClose(num, null, collectionId);
       txHash = receipt.hash;
     }
 
@@ -655,8 +658,8 @@ router.post("/:num/holder-merkle", async (req, res, next) => {
     await pool.query("UPDATE nft_waves SET wave_merkle_root=$1 WHERE wave_number=$2 AND collection_id=$3", [root, num, collectionId]);
 
     let txHash: string | undefined;
-    if (process.env.CONTRACT_ADDRESS && process.env.ETH_RPC_URL) {
-      const receipt = await contractSetAllowlistRoot(root);
+    if (process.env.ETH_RPC_URL) {
+      const receipt = await contractSetAllowlistRoot(root, collectionId);
       txHash = receipt.hash;
     }
 
@@ -764,45 +767,6 @@ router.put("/:num/artist-config", async (req, res, next) => {
   }
 });
 
-// POST /api/nft-sell/waves/:num/whitelist-required
-// Toggle per-wave whitelist restriction on-chain + sync to DB.
-router.post("/:num/whitelist-required", async (req, res, next) => {
-  try {
-    requirePermission(req, "nft_waves.manage");
-    const num = parseInt(req.params.num, 10);
-    if (isNaN(num) || num < 1 || num > 7)
-      return res.status(400).json({ error: "Wave number must be 1-7" });
-    const { required } = req.body as { required?: boolean };
-    if (typeof required !== "boolean")
-      return res.status(400).json({ error: "required must be a boolean" });
-    const collectionId = requireCollectionId(req, res);
-    if (!collectionId) return;
-    const { contractSetWaveWhitelistRequired } = await import("../../services/contract.service");
-    const receipt = await contractSetWaveWhitelistRequired(num, required);
-    await pool.query(
-      "UPDATE nft_waves SET whitelist_required = $2, updated_at = NOW() WHERE wave_number = $1 AND collection_id = $3",
-      [num, required, collectionId],
-    );
-    res.json({ ok: true, txHash: receipt.hash, waveNumber: num, whitelistRequired: required });
-  } catch (err) { next(err); }
-});
-
-// POST /api/nft-sell/waves/whitelist-approved
-// Batch approve/revoke wallets for restricted waves on-chain.
-router.post("/whitelist-approved", async (req, res, next) => {
-  try {
-    requirePermission(req, "nft_waves.manage");
-    const { wallets, approved } = req.body as { wallets?: string[]; approved?: boolean };
-    if (!Array.isArray(wallets) || !wallets.length)
-      return res.status(400).json({ error: "wallets must be a non-empty array" });
-    if (typeof approved !== "boolean")
-      return res.status(400).json({ error: "approved must be a boolean" });
-    const { contractSetWaveWhitelistApprovedBatch } = await import("../../services/contract.service");
-    const receipt = await contractSetWaveWhitelistApprovedBatch(wallets, approved);
-    res.json({ ok: true, txHash: receipt.hash, walletCount: wallets.length, approved });
-  } catch (err) { next(err); }
-});
-
 // POST /api/nft-sell/waves/:num/repair-treasury-mints
 router.post("/:num/repair-treasury-mints", async (req, res, next) => {
   try {
@@ -814,9 +778,8 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
     if (!collectionId) return;
 
     const RPC_URL = process.env.ETH_RPC_URL!;
-    const CONTRACT_ADDR = process.env.CONTRACT_ADDRESS!;
-    if (!RPC_URL || !CONTRACT_ADDR)
-      return res.status(500).json({ error: "ETH_RPC_URL / CONTRACT_ADDRESS not set" });
+    if (!RPC_URL) return res.status(500).json({ error: "ETH_RPC_URL not set" });
+    const CONTRACT_ADDR = await resolveCollectionContractAddress(collectionId);
 
     // 1. Load wave DB row
     const { rows: waveRows } = await pool.query(

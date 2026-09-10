@@ -1,7 +1,177 @@
 import { Router } from "express";
 import pool from "../../pool";
+import { requirePermission } from "../../adminAuth";
+import { ethers } from "ethers";
+import {
+  contractGetCollectionInfo,
+  contractSetSBT,
+  contractReserveMint,
+  contractSetBlindBoxURI,
+  contractWithdraw,
+  contractPause,
+  contractUnpause,
+  contractBlockAccount,
+} from "../../services/contract.service";
+import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } from "../../services/timelock.service";
 
 const router = Router();
+
+// GET /api/nft-sell/collection — DB config + live on-chain snapshot for the
+// Contract Operations page header + Mint Operations tab.
+router.get("/", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.view");
+    const { rows } = await pool.query("SELECT * FROM nft_collection_config WHERE id = 1");
+    const config = rows[0] ?? null;
+
+    const [onChainInfo, revealRows] = await Promise.all([
+      contractGetCollectionInfo(),
+      pool.query("SELECT COUNT(*) FILTER (WHERE wave_revealed) AS n FROM nft_waves"),
+    ]);
+
+    const onChain = {
+      currentPhase: onChainInfo.currentPhase,
+      maxSupply: Number(onChainInfo.maxSupply),
+      totalMinted: Number(onChainInfo.totalMinted),
+      revealCount: Number(revealRows.rows[0]?.n ?? 0),
+      sbt: onChainInfo.sbt,
+      royaltyEnforced: config?.royalty_enforced ?? true,
+      purchaseLimitEnabled: onChainInfo.purchaseLimitEnabled,
+      normalMaxPerWallet: Number(onChainInfo.normalMaxPerWallet),
+    };
+
+    res.json({ config, onChain });
+  } catch (err) { next(err); }
+});
+
+// GET /api/nft-sell/collection/events?limit=20 — audit log, read from
+// nft_event_log (populated by contract.service.ts's syncReceiptLogs on every
+// admin write). Column is created_at, not processed_at -- aliased to match
+// the frontend's ContractEvent shape.
+router.get("/events", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.view");
+    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "20"), 10) || 20, 1), 200);
+    const { rows } = await pool.query(
+      `SELECT id, event_name, tx_hash, block_number, created_at AS processed_at
+         FROM nft_event_log
+        ORDER BY created_at DESC
+        LIMIT $1`,
+      [limit]
+    );
+    res.json({ events: rows });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/nft-sell/collection/sbt — collection-wide SBT toggle
+router.put("/sbt", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const { enabled } = req.body as { enabled?: boolean };
+    if (typeof enabled !== "boolean") return res.status(422).json({ error: "enabled (boolean) required" });
+    const receipt = await contractSetSBT(enabled);
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+// POST /api/nft-sell/collection/admin-mint — treasury reserve mint (wave 0,
+// outside any wave's quota/purchase-limit).
+router.post("/admin-mint", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const { to, qty } = req.body as { to?: string; qty?: number };
+    if (!to) return res.status(422).json({ error: "to (wallet address) required" });
+    if (!qty || qty < 1) return res.status(422).json({ error: "qty must be >= 1" });
+    const receipt = await contractReserveMint(to, qty, 0);
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/nft-sell/collection/blind-box-uri
+router.put("/blind-box-uri", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const { uri } = req.body as { uri?: string };
+    if (!uri) return res.status(422).json({ error: "uri required" });
+    const receipt = await contractSetBlindBoxURI(uri);
+    await pool.query("UPDATE nft_collection_config SET blind_box_uri = $1, updated_at = NOW() WHERE id = 1", [uri]);
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+// ── Treasury Wallet — gated behind BearthTimelock (48h delay) ────────────────
+// PUT /treasury schedules the change; GET /treasury/timelock-status reports
+// readiness; POST /treasury/execute finalizes it once ready. A direct,
+// single-step "set treasury wallet" call would simply revert on-chain, since
+// setTreasuryWallet requires TREASURY_TIMELOCK_ROLE, held only by the Timelock.
+router.put("/treasury", async (req, res, next) => {
+  try {
+    const { userId } = requirePermission(req, "contract_ops.manage");
+    const { wallet } = req.body as { wallet?: string };
+    if (!wallet) return res.status(422).json({ error: "wallet required" });
+    const result = await scheduleTreasuryWalletChange(wallet, userId);
+    res.json({ ok: true, scheduled: true, ...result });
+  } catch (err) { next(err); }
+});
+
+router.get("/treasury/timelock-status", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.view");
+    const status = await getLatestTimelockOp("setTreasuryWallet");
+    res.json({ status });
+  } catch (err) { next(err); }
+});
+
+router.post("/treasury/execute", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const { operationId } = req.body as { operationId?: string };
+    if (!operationId) return res.status(422).json({ error: "operationId required" });
+    const result = await executeTimelockOp(operationId);
+    res.json({ ok: true, txHash: result.txHash });
+  } catch (err) { next(err); }
+});
+
+// POST /api/nft-sell/collection/withdraw — sweep ETH balance to treasury wallet
+router.post("/withdraw", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const receipt = await contractWithdraw();
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+// POST /api/nft-sell/collection/pause | /unpause
+router.post("/pause", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const receipt = await contractPause();
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+router.post("/unpause", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const receipt = await contractUnpause();
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+// PUT /api/nft-sell/collection/block-account — OPERATOR_ROLE-gated, blocks/
+// unblocks a wallet from minting and transfers. Pre-mainnet checklist item #3
+// -- contractBlockAccount() already existed in the service layer but had no
+// route anywhere until now.
+router.put("/block-account", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const { wallet, blocked } = req.body as { wallet?: string; blocked?: boolean };
+    if (!wallet || !ethers.isAddress(wallet)) return res.status(422).json({ error: "Valid wallet address required" });
+    if (typeof blocked !== "boolean") return res.status(422).json({ error: "blocked (boolean) required" });
+    const receipt = await contractBlockAccount(wallet, blocked);
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
 
 const FILEBASE_GATEWAY = "https://amgbearth.myfilebase.com/ipfs";
 

@@ -36,6 +36,7 @@
     "express": "^4.21.2",
     "express-rate-limit": "^7.4.1",
     "googleapis": "^173.0.0",
+    "ipfs-car": "^3.1.0",
     "multer": "^2.2.0",
     "nodemailer": "^9.0.3",
     "pg": "^8.13.1",

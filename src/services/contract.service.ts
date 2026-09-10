@@ -8,6 +8,10 @@ import { HttpError } from "../errors";
 let _contractRO: Contract | null = null;
 let _contractSigned: Contract | null = null;
 
+// Legacy single-collection path (Contract Operations page, nft_collection_config
+// id=1 -- predates the nft_collections/collection-wise deploy feature and has
+// no row of its own there). Untouched by the 2026-09-10 per-collection fix
+// below -- this is a separate, pre-existing system, not a fallback for it.
 export function getContractReadOnly(): Contract {
   if (!_contractRO) {
     const addr = process.env.CONTRACT_ADDRESS;
@@ -28,6 +32,45 @@ export function getContractWithSigner(): Contract {
     _contractSigned = new ethers.Contract(addr, BearthNFT_ABI, signer);
   }
   return _contractSigned;
+}
+
+// ── Per-collection contract resolution (collection-wise deploys) ───────────────
+// Single source of truth: nft_collections.contract_address. No env-var
+// fallback -- a collection with no deployed contract is a real error state
+// (caught pre-2026-09-10 only by accident, via a bug where every collection's
+// wave calls silently hit whatever the global CONTRACT_ADDRESS happened to be).
+const _contractROByCollection = new Map<string, Contract>();
+const _contractSignedByCollection = new Map<string, Contract>();
+
+export async function resolveCollectionContractAddress(collectionId: string): Promise<string> {
+  const { rows } = await pool.query(
+    "SELECT contract_address FROM nft_collections WHERE id = $1",
+    [collectionId],
+  );
+  const addr = rows[0]?.contract_address as string | null | undefined;
+  if (!addr) throw new HttpError(400, "This collection does not have a deployed contract yet.");
+  return addr;
+}
+
+export async function getContractReadOnlyForCollection(collectionId: string): Promise<Contract> {
+  const cached = _contractROByCollection.get(collectionId);
+  if (cached) return cached;
+  const addr = await resolveCollectionContractAddress(collectionId);
+  const c = new ethers.Contract(addr, BearthNFT_ABI, getProvider());
+  _contractROByCollection.set(collectionId, c);
+  return c;
+}
+
+export async function getContractWithSignerForCollection(collectionId: string): Promise<Contract> {
+  const cached = _contractSignedByCollection.get(collectionId);
+  if (cached) return cached;
+  const addr = await resolveCollectionContractAddress(collectionId);
+  const privateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
+  if (!privateKey) throw new Error("CONTRACT_PRIVATE_KEY (or FIXED_PRIVATE_KEY) env var is required");
+  const signer = new ethers.Wallet(privateKey, getProvider());
+  const c = new ethers.Contract(addr, BearthNFT_ABI, signer);
+  _contractSignedByCollection.set(collectionId, c);
+  return c;
 }
 const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   // Wave / supply
@@ -100,9 +143,10 @@ function decodeContractError(err: unknown): string | null {
 export async function callContract(
   methodName: string,
   args: unknown[] = [],
-  overrides: Record<string, unknown> = {}
+  overrides: Record<string, unknown> = {},
+  collectionId?: string,
 ): Promise<ethers.TransactionReceipt> {
-  const contract = getContractWithSigner();
+  const contract = collectionId ? await getContractWithSignerForCollection(collectionId) : getContractWithSigner();
   try {
     const tx = await (contract[methodName] as (...a: unknown[]) => Promise<ethers.TransactionResponse>)(
       ...args, overrides
@@ -399,11 +443,12 @@ export async function resyncFromBlock(fromBlock = 0): Promise<{ synced: number; 
 export async function contractSetWaveSchedule(
   waveNum: number,
   startUnix: number,
-  endUnix: number
+  endUnix: number,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
   if (endUnix <= startUnix) throw new Error("End time must be after start time");
-  return callContract("setWaveSchedule", [waveNum, startUnix, endUnix]);
+  return callContract("setWaveSchedule", [waveNum, startUnix, endUnix], {}, collectionId);
 }
 
 export async function contractSetWavePrice(
@@ -414,20 +459,21 @@ export async function contractSetWavePrice(
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
   const { rows } = await pool.query("SELECT price_locked FROM nft_waves WHERE wave_number=$1 AND collection_id=$2", [waveNum, collectionId]);
   if (rows[0]?.price_locked) throw new Error(`Wave ${waveNum} price is locked  first sale has occurred`);
-  return callContract("setWavePrice", [waveNum, priceWei]);
+  return callContract("setWavePrice", [waveNum, priceWei], {}, collectionId);
 }
 
 export async function contractTreasuryClose(
   waveNum: number,
-  recipient: string | null
+  recipient: string | null,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
   let to = recipient;
   if (!to) {
-    to = await getContractReadOnly().treasuryWallet() as string;
+    to = await (await getContractReadOnlyForCollection(collectionId)).treasuryWallet() as string;
   }
   if (!ethers.isAddress(to)) throw new Error("Invalid recipient address");
-  return callContract("treasuryClose", [waveNum, to]);
+  return callContract("treasuryClose", [waveNum, to], {}, collectionId);
 }
 
 export async function contractSetRoyalty(
@@ -462,23 +508,6 @@ export async function contractSetPurchaseLimitConfig(
   return callContract("setPurchaseLimitConfig", [enabled, normalMaxPerWallet]);
 }
 
-export async function contractSetWaveWhitelistRequired(
-  waveNum: number,
-  required: boolean
-): Promise<ethers.TransactionReceipt> {
-  if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1-7");
-  return callContract("setWaveWhitelistRequired", [waveNum, required]);
-}
-
-export async function contractSetWaveWhitelistApprovedBatch(
-  wallets: string[],
-  approved: boolean
-): Promise<ethers.TransactionReceipt> {
-  if (!wallets.length) throw new Error("Wallet list is empty");
-  if (!wallets.every(w => ethers.isAddress(w))) throw new Error("One or more addresses are invalid");
-  return callContract("setWaveWhitelistApprovedBatch", [wallets, approved]);
-}
-
 export async function contractSetPhase(
   phase: 0 | 1 | 2
 ): Promise<ethers.TransactionReceipt> {
@@ -486,10 +515,11 @@ export async function contractSetPhase(
 }
 
 export async function contractSetAllowlistRoot(
-  root: string
+  root: string,
+  collectionId?: string
 ): Promise<ethers.TransactionReceipt> {
   if (!/^0x[0-9a-fA-F]{64}$/.test(root)) throw new Error("root must be a 32-byte hex string (0x...)");
-  return callContract("setAllowlistRoot", [root]);
+  return callContract("setAllowlistRoot", [root], {}, collectionId);
 }
 
 // Backward-compat alias used by whitelist route
@@ -506,44 +536,15 @@ export async function contractWithdraw(): Promise<ethers.TransactionReceipt> {
   return callContract("withdraw", []);
 }
 
-export async function contractAuctionMint(
-  to: string,
-  waveNum: number,
-  qty: number
-): Promise<ethers.TransactionReceipt> {
-  if (!ethers.isAddress(to)) throw new Error("Invalid recipient address");
-  if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
-  if (qty < 1) throw new Error("Quantity must be at least 1");
-  return callContract("auctionMint", [to, waveNum, qty]);
-}
-
-export async function contractSetTokenPrice(
-  tokenId: number,
-  priceWei: bigint
-): Promise<ethers.TransactionReceipt> {
-  const { rows } = await pool.query("SELECT rarity_price_locked FROM nft_records WHERE token_id=$1", [tokenId]);
-  if (rows[0]?.rarity_price_locked) {
-    throw new Error(`Token ${tokenId} rarity price is locked  already sold to a customer`);
-  }
-  return callContract("setTokenPrice", [tokenId, priceWei]);
-}
-
-export async function contractSetRarityBatch(
-  tokenIds: number[],
-  rarities: number[]
-): Promise<ethers.TransactionReceipt> {
-  if (tokenIds.length !== rarities.length) throw new Error("tokenIds and rarities length mismatch");
-  if (rarities.some(r => r < 1 || r > 4)) throw new Error("Rarity must be 1–4 (Common/Rare/Epic/Legendary)");
-  return callContract("setRarityBatch", [tokenIds, rarities]);
-}
-
 export async function contractReserveMint(
   to: string,
-  qty: number
+  qty: number,
+  waveNum: number = 0
 ): Promise<ethers.TransactionReceipt> {
   if (!ethers.isAddress(to)) throw new Error("Invalid recipient address");
   if (qty < 1) throw new Error("Quantity must be at least 1");
-  return callContract("reserveMint", [to, qty]);
+  if (waveNum < 0 || waveNum > 7) throw new Error("Wave number must be 0 (treasury) to 7");
+  return callContract("reserveMint", [to, qty, waveNum]);
 }
 
 export async function contractSetSBT(
@@ -565,13 +566,6 @@ export async function contractPause(): Promise<ethers.TransactionReceipt> {
 
 export async function contractUnpause(): Promise<ethers.TransactionReceipt> {
   return callContract("unpause", []);
-}
-
-export async function contractSetContractURI(
-  uri: string
-): Promise<ethers.TransactionReceipt> {
-  if (!uri) throw new Error("URI is required");
-  return callContract("setContractURI", [uri]);
 }
 
 export async function contractSetBlindBoxURI(
@@ -617,16 +611,6 @@ export async function contractTransferFromBatch(
   return results;
 }
 
-export async function contractBreedMint(
-  to: string,
-  outputRarity: number,
-  burnIds: number[]
-): Promise<ethers.TransactionReceipt> {
-  if (!ethers.isAddress(to)) throw new Error("Invalid recipient address");
-  if (!burnIds.length) throw new Error("burnIds must not be empty");
-  if (outputRarity < 1 || outputRarity > 4) throw new Error("outputRarity must be 1–4");
-  return callContract("breedMint", [to, outputRarity, burnIds]);
-}
 export async function contractGetCollectionInfo(): Promise<{
   currentPhase: number;
   maxSupply: bigint;
@@ -664,15 +648,18 @@ export async function contractGetRoyalty(): Promise<{ receiver: string; feeBps: 
   }
 }
 
+// isGenesis()/getSeries() were removed from the contract to reclaim EIP-170
+// bytecode headroom (both were pure wrappers around the still-public
+// getTokenWave()) -- derived the same way off-chain instead.
 export async function contractIsGenesis(tokenId: number): Promise<boolean> {
-  return getContractReadOnly().isGenesis(tokenId);
+  return (await contractGetSeries(tokenId)) <= 2; // Waves 1+2 are both the Genesis stage
 }
 
 export async function contractGetSeries(tokenId: number): Promise<number> {
-  return Number(await getContractReadOnly().getSeries(tokenId));
+  return Number(await getContractReadOnly().getTokenWave(tokenId));
 }
 
-export async function contractGetWaveInfo(waveNum: number): Promise<{
+export async function contractGetWaveInfo(waveNum: number, collectionId?: string): Promise<{
   price: bigint;
   qty: bigint;
   soldCount: bigint;
@@ -682,7 +669,7 @@ export async function contractGetWaveInfo(waveNum: number): Promise<{
   active: boolean;
   revealed: boolean;
 }> {
-  const c = getContractReadOnly();
+  const c = collectionId ? await getContractReadOnlyForCollection(collectionId) : getContractReadOnly();
   const [price, qty, soldCount, startTime, endTime, closed, revealed] = await Promise.all([
     c.wavePrice(waveNum) as Promise<bigint>,
     c.waveQty(waveNum) as Promise<bigint>,
@@ -697,27 +684,30 @@ export async function contractGetWaveInfo(waveNum: number): Promise<{
   return { price, qty, soldCount, startTime, endTime, closed, active, revealed };
 }
 
-export async function contractGetWavePurchaseLimit(waveNum: number): Promise<number> {
-  const limit: bigint = await (getContractReadOnly().wavePurchaseLimit(waveNum) as Promise<bigint>);
+export async function contractGetWavePurchaseLimit(waveNum: number, collectionId?: string): Promise<number> {
+  const c = collectionId ? await getContractReadOnlyForCollection(collectionId) : getContractReadOnly();
+  const limit: bigint = await (c.wavePurchaseLimit(waveNum) as Promise<bigint>);
   return Number(limit);
 }
 
 export async function contractSetWavePurchaseLimit(
   waveNum: number,
-  maxPerWallet: number
+  maxPerWallet: number,
+  collectionId?: string
 ): Promise<ethers.TransactionReceipt> {
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1-7");
   if (maxPerWallet < 0) throw new Error("maxPerWallet must be >= 0");
-  return callContract("setWavePurchaseLimit", [waveNum, maxPerWallet]);
+  return callContract("setWavePurchaseLimit", [waveNum, maxPerWallet], {}, collectionId);
 }
 
 export async function contractRevealWave(
   waveNum: number,
-  uri: string
+  uri: string,
+  collectionId?: string
 ): Promise<ethers.TransactionReceipt> {
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
   if (!uri?.startsWith("ipfs://")) throw new Error("URI must start with ipfs://");
-  return callContract("revealWave", [waveNum, uri]);
+  return callContract("revealWave", [waveNum, uri], {}, collectionId);
 }
 
 export async function contractGetWalletInfo(address: string): Promise<{

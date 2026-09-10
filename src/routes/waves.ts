@@ -256,10 +256,10 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
     // P2-04 / nft-sell/waves PUT /:num/schedule is the explicit on-chain push path.
     // Auto-trigger also pushes at wave start time as a final fallback.
     if (startVal && endVal && new Date(startVal) > now && !wave.wave_closed &&
-        process.env.CONTRACT_ADDRESS && process.env.ETH_RPC_URL && process.env.FIXED_PRIVATE_KEY) {
+        process.env.ETH_RPC_URL && process.env.FIXED_PRIVATE_KEY) {
       const startUnix = Math.floor(new Date(startVal).getTime() / 1000);
       const endUnix   = Math.floor(new Date(endVal).getTime() / 1000);
-      contractSetWaveSchedule(waveNumber, startUnix, endUnix)
+      contractSetWaveSchedule(waveNumber, startUnix, endUnix, collectionId)
         .then(() => logger.info(`[waves-save] Wave ${waveNumber} schedule pre-pushed on-chain (start=${startVal})`))
         .catch(e => logger.warn(`[waves-save] Wave ${waveNumber} on-chain pre-push failed – auto-trigger will retry`, e));
     }

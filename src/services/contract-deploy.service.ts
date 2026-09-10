@@ -14,6 +14,23 @@ const MIN_DEPLOY_ETH = "0.05"; // comfortable margin for impl + proxy + validato
 
 export type DeployNetwork = "sepolia" | "mainnet";
 
+// Fibonacci split across the 7 fixed waves (multipliers 1,1,2,3,5,8,13, sum
+// 33) -- the same formula BearthNFT.sol's original hardcoded 9999-collection
+// wave sizes (303/303/606/909/1515/2424/3939) always followed, since
+// 9999/33 = 303. Computed here (off-chain, in this trusted admin-only deploy
+// path) rather than on-chain because BearthNFT.sol has ~0 bytecode headroom
+// under EIP-170's 24KB limit; initialize() just validates+sums whatever's
+// passed in, so there's no way for MAX_SUPPLY to disagree with the real wave
+// allocations regardless of how this array was computed.
+const WAVE_FIB = [1, 1, 2, 3, 5, 8, 13];
+const WAVE_FIB_SUM = 33;
+function fibonacciWaveQtys(totalSupply: number): number[] {
+  const qtys = WAVE_FIB.map((f) => Math.floor((totalSupply * f) / WAVE_FIB_SUM));
+  const remainder = totalSupply - qtys.reduce((a, b) => a + b, 0);
+  qtys[6] += remainder; // any rounding remainder goes to the largest (final) wave
+  return qtys;
+}
+
 // Signer keys never travel through the browser or an API request body — they
 // live only in these server-side env vars, one deployer wallet per network.
 // That same wallet's address is used as admin/operations/treasury (matches
@@ -39,7 +56,7 @@ export async function deployCollectionContract(params: {
   const { collectionId, network, blindBoxUri, deployedBy } = params;
 
   const { rows } = await pool.query(
-    "SELECT id, name, symbol, contract_address FROM nft_collections WHERE id = $1",
+    "SELECT id, name, symbol, supply, contract_address FROM nft_collections WHERE id = $1",
     [collectionId],
   );
   const collection = rows[0];
@@ -47,13 +64,32 @@ export async function deployCollectionContract(params: {
   if (collection.contract_address) throw new Error("This collection already has a deployed contract.");
   if (!collection.symbol?.trim()) throw new Error("Set a Token Symbol on this collection before deploying a contract.");
   if (!blindBoxUri?.trim()) throw new Error("Blind box metadata URI is required.");
+  const totalSupply = Number(collection.supply);
+  // < 33 (the Fibonacci multiplier sum) would floor the smallest wave(s) to 0,
+  // which initialize() rejects (InvalidQuantity) -- every wave must get >= 1.
+  if (!Number.isInteger(totalSupply) || totalSupply < 33) {
+    throw new Error("Collection supply must be a whole number of at least 33 before deploying a contract (so every wave gets at least 1 token).");
+  }
+  const waveQtys = fibonacciWaveQtys(totalSupply);
 
   const { rpcUrl, privateKey, emergencyWallet } = getNetworkConfig(network);
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(privateKey, provider);
   const adminWallet = signer.address;
-  const operationsWallet = signer.address;
   const treasury = signer.address;
+  // operationsWallet is deliberately NOT signer.address: BearthApi-V1's
+  // day-to-day write operations (setWaveSchedule, treasuryClose, revealWave,
+  // pause, etc. -- everything in nft-sell/waves.ts) sign with
+  // CONTRACT_PRIVATE_KEY/FIXED_PRIVATE_KEY, a DIFFERENT wallet from this
+  // deploy-time signer. Granting OPERATOR_ROLE to the deployer instead of
+  // this wallet left every freshly-deployed collection-wise contract
+  // unusable by the actual backend signer (confirmed 2026-09-10: "Caller
+  // does not have the required role" on setWaveSchedule for Bearth Test1).
+  const operationsPrivateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
+  if (!operationsPrivateKey) {
+    throw new Error("CONTRACT_PRIVATE_KEY (or FIXED_PRIVATE_KEY) is not configured on the server -- required so the deployed contract's OPERATOR_ROLE matches the wallet BearthApi-V1 actually signs wave-management transactions with.");
+  }
+  const operationsWallet = new ethers.Wallet(operationsPrivateKey).address;
 
   if (network === "mainnet" && emergencyWallet.toLowerCase() === operationsWallet.toLowerCase()) {
     throw new Error(
@@ -71,7 +107,7 @@ export async function deployCollectionContract(params: {
     );
   }
 
-  logger.info(`[contract-deploy] Deploying contract for "${collection.name}" on ${network} — deployer ${signer.address}`);
+  logger.info(`[contract-deploy] Deploying contract for "${collection.name}" on ${network} — deployer ${signer.address}, supply ${totalSupply}, waves ${JSON.stringify(waveQtys)}`);
 
   // ── 1. Deploy CreatorTokenTransferValidator ──────────────────────────────
   const ValidatorFactory = new ethers.ContractFactory(ValidatorArtifact.abi, ValidatorArtifact.bytecode, signer);
@@ -97,6 +133,7 @@ export async function deployCollectionContract(params: {
     emergencyWallet,
     treasury,
     validatorAddress,
+    waveQtys,
   ]);
   const ProxyFactory = new ethers.ContractFactory(BearthProxyArtifact.abi, BearthProxyArtifact.bytecode, signer);
   const proxy = await ProxyFactory.deploy(implAddress, initData);

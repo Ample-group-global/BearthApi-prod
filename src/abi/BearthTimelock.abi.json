@@ -1,0 +1,77 @@
+[
+  {
+    "type": "function",
+    "name": "schedule",
+    "stateMutability": "nonpayable",
+    "inputs": [
+      { "name": "target", "type": "address" },
+      { "name": "value", "type": "uint256" },
+      { "name": "data", "type": "bytes" },
+      { "name": "predecessor", "type": "bytes32" },
+      { "name": "salt", "type": "bytes32" },
+      { "name": "delay", "type": "uint256" }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "execute",
+    "stateMutability": "payable",
+    "inputs": [
+      { "name": "target", "type": "address" },
+      { "name": "value", "type": "uint256" },
+      { "name": "payload", "type": "bytes" },
+      { "name": "predecessor", "type": "bytes32" },
+      { "name": "salt", "type": "bytes32" }
+    ],
+    "outputs": []
+  },
+  {
+    "type": "function",
+    "name": "hashOperation",
+    "stateMutability": "view",
+    "inputs": [
+      { "name": "target", "type": "address" },
+      { "name": "value", "type": "uint256" },
+      { "name": "data", "type": "bytes" },
+      { "name": "predecessor", "type": "bytes32" },
+      { "name": "salt", "type": "bytes32" }
+    ],
+    "outputs": [{ "name": "", "type": "bytes32" }]
+  },
+  {
+    "type": "function",
+    "name": "getTimestamp",
+    "stateMutability": "view",
+    "inputs": [{ "name": "id", "type": "bytes32" }],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  },
+  {
+    "type": "function",
+    "name": "isOperationReady",
+    "stateMutability": "view",
+    "inputs": [{ "name": "id", "type": "bytes32" }],
+    "outputs": [{ "name": "", "type": "bool" }]
+  },
+  {
+    "type": "function",
+    "name": "isOperationDone",
+    "stateMutability": "view",
+    "inputs": [{ "name": "id", "type": "bytes32" }],
+    "outputs": [{ "name": "", "type": "bool" }]
+  },
+  {
+    "type": "function",
+    "name": "isOperationPending",
+    "stateMutability": "view",
+    "inputs": [{ "name": "id", "type": "bytes32" }],
+    "outputs": [{ "name": "", "type": "bool" }]
+  },
+  {
+    "type": "function",
+    "name": "getMinDelay",
+    "stateMutability": "view",
+    "inputs": [],
+    "outputs": [{ "name": "", "type": "uint256" }]
+  }
+]

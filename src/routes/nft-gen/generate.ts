@@ -222,12 +222,22 @@ function computeRarity(combos: Record<string, Asset | null>[], layers: Layer[]):
 }
 
 // ── Async cleanup — runs fire-and-forget AFTER generation completes ────────────
+// Only removes jobs that were NEVER exported to Filebase (export_bucket IS
+// NULL). A job that already completed a real Filebase export must never be
+// silently deleted here -- doing so previously wiped the DB's only record of
+// that export (job row + every nft_generated_items row, including their
+// ipfs_image_cid history) even though the actual files were still sitting in
+// the bucket untouched, leaving the sync-status page unable to see them and
+// forcing a needless full re-export. If an old export truly needs clearing,
+// that's what the sync-status page's explicit "Clear & Resync from Filebase"
+// action is for -- not an automatic side effect of regenerating.
 async function cleanOldGenerationData(collectionId: string, newJobId: string): Promise<void> {
   const { rows: oldJobs } = await pool.query<{ id: string }>(
     `SELECT id FROM nft_generation_jobs
      WHERE collection_id = $1::uuid
        AND id <> $2::uuid
-       AND status IN ('complete', 'failed')`,
+       AND status IN ('complete', 'failed')
+       AND export_bucket IS NULL`,
     [collectionId, newJobId]
   );
   if (!oldJobs.length) return;
@@ -237,7 +247,7 @@ async function cleanOldGenerationData(collectionId: string, newJobId: string): P
     "DELETE FROM nft_generation_jobs WHERE id = ANY($1::uuid[])",
     [oldIds]
   );
-  logger.info(`[generate] cleanup: removed ${oldIds.length} old job(s) for collection ${collectionId}`);
+  logger.info(`[generate] cleanup: removed ${oldIds.length} old never-exported job(s) for collection ${collectionId}`);
 }
 
 // ── Background worker ─────────────────────────────────────────────────────────
