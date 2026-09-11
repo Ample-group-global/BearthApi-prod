@@ -183,10 +183,15 @@ async function syncEvent(
   const collectionId = await resolveCollectionIdFromContractAddress(contractAddress);
   try {
     if (txHash) {
-      await pool.query(
+      const { rows: logRows } = await pool.query<{ nft_event_log: boolean }>(
         "SELECT nft_event_log($1,$2,$3,$4,$5,$6,$7)",
         [eventName, txHash, blockNumber, logIndex, null, null, JSON.stringify(argsToPayload(args))]
       );
+      const isNewEvent = logRows[0]?.nft_event_log ?? true;
+      if (!isNewEvent) {
+        console.log(`[contract.service] Duplicate delivery of ${eventName} (${txHash}#${logIndex}) -- already processed, skipping side effects.`);
+        return;
+      }
     }
 
     switch (eventName) {
