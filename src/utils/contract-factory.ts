@@ -17,9 +17,29 @@ const MAX_CONCURRENT_RPC_CALLS = 4;
 // unbounded in parallel; jittered backoff keeps retries from re-colliding in
 // lockstep when multiple bursts get rate-limited at the same moment. Fixed
 // at this single choke point instead of patching each route individually.
+// ethers wraps eth_call errors into a CALL_EXCEPTION ("missing revert data")
+// before they ever reach this provider's catch block -- the real 429 sits
+// nested at err.info.error.code/message, not in err.message. Checking only
+// the top-level message let every read-only contract call (tokenURI(),
+// blockedAccounts(), everything using provider.call()) silently skip retry
+// on a rate limit while writes/raw sends were still covered. Serializing the
+// whole error (message + shortMessage + info + error) before testing catches
+// both shapes without needing to enumerate ethers' every wrapping variant.
+function collectErrorText(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+  const parts = [err.message];
+  const anyErr = err as unknown as Record<string, unknown>;
+  if (typeof anyErr.shortMessage === "string") parts.push(anyErr.shortMessage);
+  for (const key of ["info", "error"] as const) {
+    if (anyErr[key] != null) {
+      try { parts.push(JSON.stringify(anyErr[key])); } catch { /* ignore */ }
+    }
+  }
+  return parts.join(" | ");
+}
+
 function isRateLimitError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /429|too many requests|exceeded its compute units|rate limit/i.test(message);
+  return /429|too many requests|exceeded its compute units|rate limit/i.test(collectErrorText(err));
 }
 
 // Alchemy's free tier also caps eth_getLogs to a 10-block range per call.
@@ -30,8 +50,7 @@ function isRateLimitError(err: unknown): boolean {
 // poll needed to cover more than ~10 blocks (e.g. after any gap). Bisecting
 // here fixes it for that live listener too, not just the manual resync path.
 function isBlockRangeLimitError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return /block range|up to a \d+ block range/i.test(message);
+  return /block range|up to a \d+ block range/i.test(collectErrorText(err));
 }
 
 function sleep(ms: number): Promise<void> {

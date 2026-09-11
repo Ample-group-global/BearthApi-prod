@@ -187,8 +187,8 @@ async function syncEvent(
         "SELECT nft_event_log($1,$2,$3,$4,$5,$6,$7)",
         [eventName, txHash, blockNumber, logIndex, null, null, JSON.stringify(argsToPayload(args))]
       );
-      const isNewEvent = logRows[0]?.nft_event_log ?? true;
-      if (!isNewEvent) {
+      const needsProcessing = logRows[0]?.nft_event_log ?? true;
+      if (!needsProcessing) {
         console.log(`[contract.service] Duplicate delivery of ${eventName} (${txHash}#${logIndex}) -- already processed, skipping side effects.`);
         return;
       }
@@ -318,6 +318,15 @@ async function syncEvent(
 
       default:
         break;
+    }
+
+    // Only mark the event fully processed once its side effects genuinely
+    // completed. If the switch above threw, this line is never reached, the
+    // catch below logs it, and the event stays retryable -- a future
+    // resyncFromBlock() will see processed_at still NULL and re-run it,
+    // instead of the old behavior of silently skipping it forever.
+    if (txHash) {
+      await pool.query("SELECT nft_event_mark_processed($1,$2)", [txHash, logIndex]);
     }
   } catch (err) {
     console.error(`[contract.service] Failed to sync event ${eventName}:`, err);
