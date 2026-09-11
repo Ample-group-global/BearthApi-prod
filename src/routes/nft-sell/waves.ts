@@ -347,21 +347,27 @@ router.post("/:num/reveal", async (req, res, next) => {
     let autoTreasuryTxHash: string | null = null;
     if (stratRows[0]?.unsold_strategy === 'auto_treasury') {
       try {
+        // contractTreasuryClose() -> callContract() already awaits
+        // syncReceiptLogs(receipt) internally (see the standalone
+        // /treasury-close route for the full explanation) -- token_id/
+        // owner_address/delivery_status_id should already be correctly set
+        // per token by the time this returns.
         const receipt = await contractTreasuryClose(num, null, collectionId);
         autoTreasuryTxHash = receipt.hash;
-        await pool.query(
-          `UPDATE nft_records nr
-              SET delivery_status_id = (SELECT id FROM lookup_values WHERE category = 'delivery_status' AND code = 'treasury_wallet'),
-                  delivered_at       = NOW(),
-                  updated_at         = NOW()
+        const { rows: unsyncedRows } = await pool.query(
+          `SELECT COUNT(*) AS cnt FROM nft_records nr
             WHERE nr.wave_id = (SELECT id FROM nft_waves WHERE wave_number = $1 AND collection_id = $2)
               AND nr.collection_id = $2
               AND nr.token_id IS NULL
-          AND nr.delivery_status_id IN (
-            SELECT id FROM lookup_values WHERE category = 'delivery_status' AND code IN ('pre_mint','reserved','treasury_pending','pool_assigned')
-          )`,
+              AND nr.delivery_status_id IN (
+                SELECT id FROM lookup_values WHERE category = 'delivery_status' AND code IN ('pre_mint','reserved','treasury_pending','pool_assigned')
+              )`,
           [num, collectionId],
         );
+        const unsyncedCount = parseInt(unsyncedRows[0]?.cnt ?? "0");
+        if (unsyncedCount > 0) {
+          console.error(`[reveal] Wave ${num}/${collectionId}: ${unsyncedCount} unsold tokens still unsynced (no token_id) after auto-treasury-close -- syncReceiptLogs likely missed some Transfer logs (tx ${autoTreasuryTxHash}).`);
+        }
         await pool.query(
           `UPDATE nft_waves
               SET close_action          = 'treasury',
@@ -457,7 +463,8 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
          scheduled_start  = COALESCE($2, scheduled_start),
          scheduled_end    = COALESCE($3, scheduled_end),
          quantity         = CASE WHEN $4 > 0 THEN $4 ELSE quantity END,
-         starting_index   = COALESCE($5, starting_index),
+         starting_index      = COALESCE($5, starting_index),
+         wave_starting_index = COALESCE($5, wave_starting_index),
          updated_at       = NOW()
        WHERE wave_number = $1 AND collection_id = $6`,
       [num, scheduledStart, scheduledEnd, qty, startingIndex, collectionId],
@@ -578,15 +585,23 @@ router.post("/:num/treasury-close", async (req, res, next) => {
     }
 
     if (!alreadyClosedOnChain) {
+      // contractTreasuryClose() -> callContract() already awaits
+      // syncReceiptLogs(receipt) internally, which processes every Transfer
+      // log via nft_record_sync_mint -- setting token_id/owner_address/
+      // delivery_status_id correctly per token, not just a blanket status
+      // flip. By the time this call returns, every real treasury-minted
+      // token should already be fully synced.
       const receipt = await contractTreasuryClose(num, null, collectionId);
       txHash = receipt.hash;
     }
 
-    await pool.query(
-      `UPDATE nft_records nr
-          SET delivery_status_id = (SELECT id FROM lookup_values WHERE category = 'delivery_status' AND code = 'treasury_wallet'),
-              delivered_at       = NOW(),
-              updated_at         = NOW()
+    // Verify the sync actually completed rather than blanket-marking
+    // whatever's left as treasury_wallet (that used to paper over a failed
+    // sync by faking status without real token_id/owner_address/image data
+    // -- confirmed 2026-09-11 as the structural cause of "shows treasury_wallet
+    // but token_id is NULL forever" when the event listener missed logs).
+    const { rows: unsyncedRows } = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM nft_records nr
         WHERE nr.wave_id = (SELECT id FROM nft_waves WHERE wave_number = $1 AND collection_id = $2)
           AND nr.collection_id = $2
           AND nr.token_id IS NULL
@@ -595,6 +610,11 @@ router.post("/:num/treasury-close", async (req, res, next) => {
           )`,
       [num, collectionId],
     );
+    const unsyncedCount = parseInt(unsyncedRows[0]?.cnt ?? "0");
+    if (unsyncedCount > 0) {
+      console.error(`[treasury-close] Wave ${num}/${collectionId}: ${unsyncedCount} unsold tokens still unsynced (no token_id) after treasuryClose -- syncReceiptLogs likely missed some Transfer logs. NOT marking these treasury_wallet with fake data; run a resync against the real tx receipt (${txHash}) instead.`);
+    }
+
     await pool.query(
       `UPDATE nft_waves
           SET close_action          = 'treasury',

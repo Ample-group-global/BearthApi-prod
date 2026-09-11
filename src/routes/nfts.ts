@@ -208,14 +208,28 @@ router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
   }
 });
 
-// POST /api/nfts/testnet-reset — full DB reset for testnet wave testing only.
-// Blocked on mainnet. Resets nft_records, nft_waves, nft_wave_pool, customer_wallets,
-// nft_activity_log, and nft_collection_config counters to pre-mint state.
+// POST /api/nfts/testnet-reset — per-collection DB reset for testnet wave
+// testing only. Blocked on mainnet. Requires collectionId — resets ONLY that
+// collection's nft_records/nft_waves/nft_wave_pool/nft_activity_log.
+//
+// customer_wallets and nft_collection_config are DELIBERATELY left untouched:
+// customer_wallets has no collection_id column at all (is_whitelisted,
+// wallet_total_minted, wl_claimed, purchase_limit_override are stored as if
+// wallet identity were collection-agnostic, which it isn't -- a real gap,
+// tracked separately, not safe to guess a scoping for here). nft_collection_config
+// is the legacy global singleton (id=1) superseded by nft_collections --
+// resetting it as a side effect of one collection's reset would itself
+// violate the "one collection can't affect another" rule in the other direction.
 router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
   try {
     const network = process.env.NEXT_PUBLIC_CONTRACT_NET ?? process.env.CONTRACT_NET ?? "";
     if (network === "mainnet") {
       res.status(403).json({ error: "testnet-reset is blocked on mainnet" }); return;
+    }
+
+    const { collectionId } = req.body as { collectionId?: string };
+    if (!collectionId || !/^[0-9a-f-]{36}$/i.test(collectionId)) {
+      res.status(400).json({ error: "collectionId is required for testnet-reset." }); return;
     }
 
     // Clear all mint/transfer/reveal state from NFT records (rows are permanent — never deleted)
@@ -244,9 +258,10 @@ router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
         token_sbt            = FALSE,
         delivery_status_id   = (SELECT id FROM lookup_values WHERE category = 'delivery_status' AND code = 'pending'),
         updated_at           = NOW()
-    `);
+      WHERE collection_id = $1
+    `, [collectionId]);
 
-    // Reset all 7 waves to pre-scheduling state
+    // Reset this collection's 7 waves to pre-scheduling state
     await pool.query(`
       UPDATE nft_waves SET
         status                = 'upcoming',
@@ -274,35 +289,22 @@ router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
         last_tx_hash          = NULL,
         synced_at             = NULL,
         updated_at            = NOW()
-    `);
+      WHERE collection_id = $1
+    `, [collectionId]);
 
-    await pool.query("TRUNCATE nft_wave_pool");
-    await pool.query("TRUNCATE nft_activity_log");
-
-    // Reset collection config counters to match fresh contract state
-    // Treasury wallet synced from env so DB stays consistent with deployment
-    const treasuryWallet = process.env.TREASURY_WALLET ?? null;
+    // nft_wave_pool/nft_activity_log have no collection_id column -- scope
+    // via nft_record_id's own collection instead of the TRUNCATE this used to
+    // be (TRUNCATE has no WHERE clause and would still wipe every collection).
     await pool.query(`
-      UPDATE nft_collection_config SET
-        current_phase   = 'Whitelist',
-        reveal_count    = 0,
-        total_counter   = 0,
-        reveal_uri      = NULL,
-        treasury_wallet = COALESCE($1, treasury_wallet),
-        synced_at       = NULL,
-        updated_at      = NOW()
-      WHERE id = 1
-    `, [treasuryWallet]);
-
+      DELETE FROM nft_wave_pool
+      WHERE nft_record_id IN (SELECT id FROM nft_records WHERE collection_id = $1)
+    `, [collectionId]);
     await pool.query(`
-      UPDATE customer_wallets SET
-        wallet_total_minted = 0,
-        wl_claimed          = FALSE,
-        last_tx_hash        = NULL,
-        synced_at           = NULL
-    `);
+      DELETE FROM nft_activity_log
+      WHERE nft_record_id IN (SELECT id FROM nft_records WHERE collection_id = $1)
+    `, [collectionId]);
 
-    res.json({ ok: true, message: "Testnet DB reset complete." });
+    res.json({ ok: true, message: "Testnet DB reset complete for this collection.", collectionId });
   } catch (err) { next(err); }
 });
 export default router;

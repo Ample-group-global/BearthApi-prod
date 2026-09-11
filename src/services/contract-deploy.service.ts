@@ -4,6 +4,20 @@ import { logger } from "../logger";
 import BearthNFTArtifact from "../contracts/deploy-abi/BearthNFT.json";
 import BearthProxyArtifact from "../contracts/deploy-abi/BearthProxy.json";
 import ValidatorArtifact from "../contracts/deploy-abi/CreatorTokenTransferValidator.json";
+import RevealCoordinatorArtifact from "../contracts/deploy-abi/BearthRevealCoordinator.json";
+import { invalidateCollectionContractCache, attachListenersForCollection } from "./contract.service";
+
+// Chainlink VRF v2.5 addresses -- mirrors scripts/deployRevealCoordinator.ts
+// in bearth-nft-smartcontract-v1 (single source of truth for these constants
+// would ideally live in one place; kept in sync manually for now).
+const VRF_COORDINATOR: Record<DeployNetwork, string> = {
+  sepolia: "0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B",
+  mainnet: "0xD7f86b4b8Cae7D942340FF628F82735b7a20893a",
+};
+const VRF_KEY_HASH: Record<DeployNetwork, string> = {
+  sepolia: "0x787d74caea10b2b357790d5b5247c2f63d1d91572a9846f780606e4d953677ae",
+  mainnet: "0x8077df514608a09f83e4e8d300645594e5d7234665448ba83f51a50f842bd3d9",
+};
 
 // OpenSea Seaport conduit — pre-whitelisted in the transfer validator so
 // listings work immediately after deploy. Mirrors bearth-nft-smartcontract-v1/scripts/deploy.ts.
@@ -41,10 +55,12 @@ function getNetworkConfig(network: DeployNetwork) {
   const rpcUrl = process.env[`${prefix}_RPC_URL`];
   const privateKey = process.env[`${prefix}_PRIVATE_KEY`];
   const emergencyWallet = process.env[`${prefix}_EMERGENCY_WALLET_ADDRESS`];
+  const adminGovernanceWallet = process.env[`${prefix}_ADMIN_GOVERNANCE_WALLET_ADDRESS`];
   if (!rpcUrl) throw new Error(`${prefix}_RPC_URL is not configured on the server.`);
   if (!privateKey) throw new Error(`${prefix}_PRIVATE_KEY is not configured on the server.`);
   if (!emergencyWallet) throw new Error(`${prefix}_EMERGENCY_WALLET_ADDRESS is not configured on the server.`);
-  return { rpcUrl, privateKey, emergencyWallet };
+  if (!adminGovernanceWallet) throw new Error(`${prefix}_ADMIN_GOVERNANCE_WALLET_ADDRESS is not configured on the server.`);
+  return { rpcUrl, privateKey, emergencyWallet, adminGovernanceWallet };
 }
 
 export async function deployCollectionContract(params: {
@@ -72,7 +88,7 @@ export async function deployCollectionContract(params: {
   }
   const waveQtys = fibonacciWaveQtys(totalSupply);
 
-  const { rpcUrl, privateKey, emergencyWallet } = getNetworkConfig(network);
+  const { rpcUrl, privateKey, emergencyWallet, adminGovernanceWallet } = getNetworkConfig(network);
   const provider = new ethers.JsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(privateKey, provider);
   const adminWallet = signer.address;
@@ -95,6 +111,13 @@ export async function deployCollectionContract(params: {
     throw new Error(
       "Refusing to deploy to mainnet: DEPLOY_MAINNET_EMERGENCY_WALLET_ADDRESS must be a dedicated " +
       "wallet, separate from the deployer wallet. EMERGENCY_ROLE should be an isolated key.",
+    );
+  }
+  if (network === "mainnet" && adminGovernanceWallet.toLowerCase() === signer.address.toLowerCase()) {
+    throw new Error(
+      "Refusing to deploy to mainnet: DEPLOY_MAINNET_ADMIN_GOVERNANCE_WALLET_ADDRESS must be a dedicated " +
+      "wallet, separate from the deployer wallet. UPGRADER_ROLE/TREASURY_TIMELOCK_ROLE should not sit on the " +
+      "same key used for routine deploys.",
     );
   }
 
@@ -142,19 +165,106 @@ export async function deployCollectionContract(params: {
   const proxyAddress = await proxy.getAddress();
   logger.info(`[contract-deploy] Proxy deployed: ${proxyAddress}`);
 
+  // ── 3b. Grant REVEAL_ROLE to the operations wallet ───────────────────────
+  // initialize() only grants OPERATOR_ROLE to operationsWallet -- reveal.service.ts
+  // signs revealWave() directly from this same wallet (no separate VRF
+  // coordinator contract exists yet), so it also needs REVEAL_ROLE or every
+  // reveal reverts with AccessControlUnauthorizedAccount.
+  const proxyContract = new ethers.Contract(proxyAddress, BearthNFTArtifact.abi, signer);
+  const revealRole = await proxyContract.REVEAL_ROLE();
+  await (await proxyContract.grantRole(revealRole, operationsWallet)).wait();
+  logger.info(`[contract-deploy] REVEAL_ROLE granted to operations wallet ${operationsWallet}`);
+
   // ── 4. Configure transfer validator ──────────────────────────────────────
   const validatorContract = new ethers.Contract(validatorAddress, ValidatorArtifact.abi, signer);
   await (await validatorContract.setTransferSecurityLevelOfCollection(proxyAddress, LEVEL_2)).wait();
   await (await validatorContract.addAccountsToWhitelist(proxyAddress, OPERATOR_WHITELIST, [OPENSEA_SEAPORT])).wait();
   logger.info(`[contract-deploy] Validator configured (LEVEL_2, OpenSea Seaport whitelisted)`);
 
+  // ── 5. Deploy + wire BearthRevealCoordinator (Chainlink VRF v2.5) ───────
+  // Without this, revealWave() hard-reverts forever on mainnet (WaveRandomnessNotSet
+  // -- see BearthNFT.sol's block.chainid == 1 guard). Deployed on every network,
+  // not just mainnet, so testnet exercises the exact same reveal path production
+  // will use, instead of the weaker block.prevrandao fallback diverging from it.
+  logger.info(`[contract-deploy] Deploying BearthRevealCoordinator (VRF)...`);
+  const vrfCoordinatorAddr = VRF_COORDINATOR[network];
+  const vrfKeyHash = VRF_KEY_HASH[network];
+  const vrfSubscriptionEnv = process.env[`VRF_SUBSCRIPTION_ID_${network.toUpperCase()}`];
+  const vrfSubscriptionId = vrfSubscriptionEnv ? BigInt(vrfSubscriptionEnv) : 0n;
+  if (network === "mainnet" && vrfSubscriptionId === 0n) {
+    throw new Error(
+      `Refusing to deploy to mainnet: VRF_SUBSCRIPTION_ID_MAINNET is not set. ` +
+      `requestReveal() would revert forever until a funded Chainlink VRF subscription exists -- ` +
+      `create one at https://vrf.chain.link first.`,
+    );
+  }
+  if (vrfSubscriptionId === 0n) {
+    logger.warn(`[contract-deploy] VRF_SUBSCRIPTION_ID_${network.toUpperCase()} not set -- coordinator will deploy but requestReveal() will revert until a subscription is created and coordinator.setSubscriptionId() is called.`);
+  }
+  const CoordinatorFactory = new ethers.ContractFactory(RevealCoordinatorArtifact.abi, RevealCoordinatorArtifact.bytecode, signer);
+  const coordinator = await CoordinatorFactory.deploy(
+    vrfCoordinatorAddr, proxyAddress, adminWallet, operationsWallet, vrfSubscriptionId, vrfKeyHash,
+  );
+  await coordinator.waitForDeployment();
+  const coordinatorAddress = await coordinator.getAddress();
+  logger.info(`[contract-deploy] RevealCoordinator deployed: ${coordinatorAddress}`);
+
+  const coordinatorRevealRole = await proxyContract.REVEAL_ROLE();
+  await (await proxyContract.grantRole(coordinatorRevealRole, coordinatorAddress)).wait();
+  await (await proxyContract.setRevealCoordinator(coordinatorAddress)).wait();
+  logger.info(`[contract-deploy] Coordinator wired: REVEAL_ROLE granted + setRevealCoordinator() called`);
+
+  // ── 5b. Propose coordinator ownership transfer away from the deploy wallet ──
+  // VRFConsumerBaseV2Plus inherits Chainlink's ConfirmedOwner, which makes
+  // the DEPLOYING wallet the coordinator's owner() -- completely separate
+  // from this project's AccessControl roles. That owner can call
+  // setCoordinator(attackerContract) and have it call rawFulfillRandomWords()
+  // with an arbitrary value, fully rigging the reveal shuffle (found 2026-09-11).
+  // transferOwnership() only PROPOSES the new owner -- acceptOwnership() must
+  // still be called by adminGovernanceWallet itself (its private key is never
+  // held by this server, by design -- see the 5-wallet separation-of-duties
+  // model). Until that acceptance happens, the deploy wallet remains the real
+  // owner and this vulnerability is NOT closed -- just queued.
+  await (await coordinator.transferOwnership(adminGovernanceWallet)).wait();
+  logger.warn(`[contract-deploy] Coordinator ownership transfer PROPOSED to ${adminGovernanceWallet} -- ` +
+    `still owned by the deploy wallet until that wallet calls acceptOwnership() on ${coordinatorAddress} directly (e.g. via Etherscan). ` +
+    (network === "mainnet" ? "REQUIRED before mainnet reveal is safe." : "Recommended before treating this deploy as production-representative."));
+
+  // ── 6. Grant governance-only roles to the Admin/Governance wallet ───────
+  // initialize() never grants UPGRADER_ROLE or TREASURY_TIMELOCK_ROLE to
+  // anyone (confirmed by reading BearthNFT.sol directly) -- left unassigned,
+  // NOBODY (including the team) can upgrade the contract or change the
+  // treasury wallet. Wired here to the dedicated Admin/Governance wallet so
+  // deployer/operations keys can't exercise these, but a real Bearth-team
+  // key still can.
+  const upgraderRole = await proxyContract.UPGRADER_ROLE();
+  const treasuryTimelockRole = await proxyContract.TREASURY_TIMELOCK_ROLE();
+  await (await proxyContract.grantRole(upgraderRole, adminGovernanceWallet)).wait();
+  await (await proxyContract.grantRole(treasuryTimelockRole, adminGovernanceWallet)).wait();
+  logger.info(`[contract-deploy] UPGRADER_ROLE + TREASURY_TIMELOCK_ROLE granted to Admin/Governance wallet ${adminGovernanceWallet}`);
+
   await pool.query(
     `UPDATE nft_collections SET
        contract_address = $1, contract_network = $2, contract_validator_address = $3,
-       contract_deploy_tx_hash = $4, contract_deployed_at = now(), contract_deployed_by = $5
+       contract_deploy_tx_hash = $4, contract_deployed_at = now(), contract_deployed_by = $5,
+       contract_reveal_coordinator_address = $7, contract_vrf_subscription_id = $8
      WHERE id = $6`,
-    [proxyAddress, network, validatorAddress, deployTx?.hash ?? null, deployedBy, collectionId],
+    [proxyAddress, network, validatorAddress, deployTx?.hash ?? null, deployedBy, collectionId,
+     coordinatorAddress, vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null],
   );
+
+  // This function refuses to run if contract_address is already set -- but a
+  // reset flow that nulls contract_address first (as used repeatedly this
+  // session for redeploy-and-retest cycles) then calls this again for the
+  // SAME collectionId, which is exactly how the stale-cache bug happened
+  // 2026-09-10 ("Push Schedule to Chain" landed on the old contract).
+  invalidateCollectionContractCache(collectionId);
+
+  // Same class of gap as the cache above (task #30): event listener
+  // registration used to run ONLY at server boot, so a fresh deploy's real
+  // customer mints/reveals/etc could never sync until someone manually
+  // restarted the whole server. Attach immediately instead of waiting.
+  await attachListenersForCollection(collectionId);
 
   return {
     contractAddress: proxyAddress,
@@ -162,5 +272,7 @@ export async function deployCollectionContract(params: {
     validatorAddress,
     network,
     txHash: deployTx?.hash ?? null,
+    revealCoordinatorAddress: coordinatorAddress,
+    vrfSubscriptionId: vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null,
   };
 }

@@ -21,8 +21,17 @@ function getGenesisContract(signer: ethers.Wallet, contractAddress: string): eth
   return new ethers.Contract(contractAddress, GenesisABI, signer);
 }
 
-function getCoordinatorContract(signer: ethers.Wallet): ethers.Contract | null {
-  const addr = process.env.REVEAL_COORDINATOR_ADDRESS;
+// Resolved per-collection from contract_reveal_coordinator_address (set at
+// deploy time in contract-deploy.service.ts) -- REVEAL_COORDINATOR_ADDRESS
+// was a single global env var that could only ever point at one collection's
+// coordinator, same class of bug as every other single-shared-contract issue
+// fixed 2026-09-10 (see task #25/#29).
+async function getCoordinatorContract(signer: ethers.Wallet, collectionId: string): Promise<ethers.Contract | null> {
+  const { rows } = await pool.query<{ contract_reveal_coordinator_address: string | null }>(
+    "SELECT contract_reveal_coordinator_address FROM nft_collections WHERE id = $1",
+    [collectionId],
+  );
+  const addr = rows[0]?.contract_reveal_coordinator_address;
   if (!addr) return null;
   return new ethers.Contract(addr, CoordinatorABI, signer);
 }
@@ -56,7 +65,7 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
   const contractAddress = await resolveCollectionContractAddress(collectionId);
   const signer = getSigner();
   const nft = getGenesisContract(signer, contractAddress);
-  const coordinator = getCoordinatorContract(signer);
+  const coordinator = await getCoordinatorContract(signer, collectionId);
 
   if (coordinator) {
     console.log(`[reveal] Wave ${waveNum}: VRF path via coordinator ${await coordinator.getAddress()}`);
@@ -95,8 +104,17 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
       [waveNum, provenanceHash, vrfRequestId, collectionId],
     );
 
-    console.log(`[reveal] Wave ${waveNum}: waiting for WaveRevealed event (up to 10 min)…`);
-    const txHash = await _waitForWaveRevealed(nft, waveNum, 10 * 60 * 1000, requestReceipt.blockNumber);
+    // Real fulfillment is normally fast (~15s once the VRF subscription is
+    // properly funded -- confirmed live 2026-09-11), but a subscription
+    // sitting below Chainlink's minimum-balance floor can leave a request
+    // pending for a long time before anyone notices and tops it up (observed
+    // 9+ hours in that exact scenario). 10 minutes was too tight to survive
+    // that without a confusing false-negative timeout; 30 minutes gives a
+    // realistic buffer for transient network/node delay while still failing
+    // in finite time if something is genuinely broken.
+    const VRF_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
+    console.log(`[reveal] Wave ${waveNum}: waiting for WaveRevealed event (up to ${VRF_WAIT_TIMEOUT_MS / 60000} min)…`);
+    const txHash = await _waitForWaveRevealed(nft, waveNum, VRF_WAIT_TIMEOUT_MS, requestReceipt.blockNumber);
     console.log(`[reveal] Wave ${waveNum}: revealed on-chain, tx: ${txHash}`);
 
     let startingIndexNum: number | null = null;
@@ -177,6 +195,7 @@ async function _updateWaveRevealedInDB(
         last_tx_hash      = COALESCE($3, last_tx_hash),
         provenance_hash   = COALESCE($4, provenance_hash),
         starting_index    = COALESCE($5, starting_index),
+        wave_starting_index = COALESCE($5, wave_starting_index),
         vrf_fulfilled_at  = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE vrf_fulfilled_at END,
         updated_at        = NOW()
       WHERE id = $1::uuid`,
@@ -210,16 +229,57 @@ async function _updateWaveRevealedInDB(
   console.log(`[reveal] Wave ${waveNum} reveal state synced to DB — ${revealedRows ?? 0} customer NFTs marked revealed, ${pendingRows ?? 0} unsold → reserved`);
 }
 
+// Fetches wave_reveal_uri/<edition>.json directly from IPFS -- the SAME
+// frozen, immutable folder CID that on-chain tokenURI() reads from. This is
+// deliberately NOT a self-join against other nft_records rows: this function
+// used to copy artwork data from whichever row currently had
+// serial_number='#<edition>', but since a fully-sold wave's serial numbers
+// exactly cover its own token_id range, every "source" row is ALSO a
+// mutable "destination" row elsewhere in the same run. Running this
+// function more than once (confirmed 2026-09-11, ran 3x on Bearth Test1
+// Wave 1) let a later run read an EARLIER run's already-overwritten data as
+// if it were still pristine, cascading real identity corruption across
+// dozens of tokens (e.g. row #128 ended up holding row #232's data, which
+// itself held row #303's data). Fetching straight from the immutable folder
+// CID every time makes this function safe to call any number of times.
+const IPFS_GATEWAY = "https://ipfs.filebase.io/ipfs/";
+async function fetchFolderMetadata(folderCid: string, edition: number, attempt = 1): Promise<{
+  attrs: Record<string, string>;
+  imageHash: string | null;
+} | null> {
+  try {
+    const res = await fetch(`${IPFS_GATEWAY}${folderCid}/${edition}.json`, { signal: AbortSignal.timeout(20000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const meta = JSON.parse(await res.text()) as { image?: string; attributes?: { trait_type: string; value: unknown }[] };
+    const attrs: Record<string, string> = {};
+    for (const a of meta.attributes ?? []) attrs[a.trait_type] = String(a.value);
+    return { attrs, imageHash: meta.image ? meta.image.replace(/^ipfs:\/\//, "") : null };
+  } catch (err) {
+    if (attempt < 4) {
+      await new Promise((r) => setTimeout(r, attempt * 1500));
+      return fetchFolderMetadata(folderCid, edition, attempt + 1);
+    }
+    console.warn(`[reveal] fetchFolderMetadata: ${folderCid}/${edition}.json failed after retries:`, err);
+    return null;
+  }
+}
+
 export async function _syncRevealedMetadata(waveNum: number, collectionId: string): Promise<void> {
   const { rows: waveRows } = await pool.query<{
     quantity: number;
     starting_index: number | null;
+    wave_reveal_uri: string | null;
   }>(
-    `SELECT quantity, starting_index FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
+    `SELECT quantity, starting_index, wave_reveal_uri FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
     [waveNum, collectionId],
   );
   if (!waveRows.length) return;
-  const { quantity: waveQty, starting_index: startingIndex } = waveRows[0];
+  const { quantity: waveQty, starting_index: startingIndex, wave_reveal_uri: revealUri } = waveRows[0];
+  if (!revealUri) {
+    console.warn(`[reveal] Wave ${waveNum}: no wave_reveal_uri set, cannot sync metadata`);
+    return;
+  }
+  const folderCid = revealUri.replace(/^ipfs:\/\//, "");
 
   const { rows: mintedTokens } = await pool.query<{ id: string; token_id: number }>(
     `SELECT id, token_id FROM nft_records WHERE on_chain_wave_num = $1 AND collection_id = $2 AND token_id IS NOT NULL`,
@@ -230,7 +290,7 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
     return;
   }
 
-  console.log(`[reveal] Wave ${waveNum}: syncing artwork for ${mintedTokens.length} tokens (startingIndex=${startingIndex ?? "none"})…`);
+  console.log(`[reveal] Wave ${waveNum}: syncing artwork for ${mintedTokens.length} tokens directly from folder CID ${folderCid} (startingIndex=${startingIndex ?? "none"})…`);
 
   const assignments = mintedTokens.map(({ id, token_id }) => {
     const artworkEdition = startingIndex != null
@@ -239,42 +299,42 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
     return { id, token_id, artworkEdition };
   });
 
-  const editionSerials = [...new Set(assignments.map(a => `#${a.artworkEdition}`))];
-  const { rows: artworkRows } = await pool.query<{
-    serial_number: string;
-    image_ipfs_hash: string | null;
-    metadata_ipfs_hash: string | null;
-    metadata_uri: string | null;
-    blind_box_uri: string | null;
-    traits: Record<string, string> | null;
-  }>(
-    `SELECT serial_number, image_ipfs_hash, metadata_ipfs_hash, metadata_uri, blind_box_uri, traits
-     FROM nft_records
-     WHERE serial_number = ANY($1::text[]) AND collection_id = $2`,
-    [editionSerials, collectionId],
-  );
-  const artworkMap = new Map(artworkRows.map(r => [r.serial_number, r]));
+  // Fetch each unique edition's REAL frozen file exactly once, then apply to
+  // every token assigned that edition -- not a DB self-join.
+  const uniqueEditions = [...new Set(assignments.map(a => a.artworkEdition))];
+  const editionMap = new Map<number, Awaited<ReturnType<typeof fetchFolderMetadata>>>();
+  const CONCURRENCY = 5;
+  for (let i = 0; i < uniqueEditions.length; i += CONCURRENCY) {
+    const batch = uniqueEditions.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async (edition) => {
+      editionMap.set(edition, await fetchFolderMetadata(folderCid, edition));
+    }));
+  }
 
   let synced = 0;
   let missing = 0;
   for (const { id, token_id, artworkEdition } of assignments) {
-    const artwork = artworkMap.get(`#${artworkEdition}`);
+    const artwork = editionMap.get(artworkEdition);
     if (!artwork) {
       missing++;
-      console.warn(`[reveal] Wave ${waveNum} token ${token_id}: no artwork found for edition #${artworkEdition}`);
+      console.warn(`[reveal] Wave ${waveNum} token ${token_id}: could not fetch edition #${artworkEdition} from folder CID`);
       continue;
     }
+    const metadataUri = `ipfs://${folderCid}/${artworkEdition}.json`;
     await pool.query(
       `UPDATE nft_records SET
          image_ipfs_hash    = $2,
-         metadata_ipfs_hash = $3,
-         metadata_uri       = $4,
-         blind_box_uri      = COALESCE($5, blind_box_uri),
-         traits             = $6,
+         metadata_uri       = $3,
+         traits             = $4::jsonb,
+         rarity_tier        = $5,
+         rarity_score       = $6,
+         rarity_rank        = $7,
          updated_at         = NOW()
        WHERE id = $1::uuid`,
-      [id, artwork.image_ipfs_hash, artwork.metadata_ipfs_hash,
-        artwork.metadata_uri, artwork.blind_box_uri, artwork.traits],
+      [id, artwork.imageHash, metadataUri, JSON.stringify(artwork.attrs),
+        artwork.attrs["Rarity Tier"]?.toLowerCase() ?? null,
+        artwork.attrs["Rarity Score"] ?? null,
+        artwork.attrs["Rarity Rank"] ? parseInt(artwork.attrs["Rarity Rank"].replace("#", ""), 10) : null],
     );
     synced++;
   }

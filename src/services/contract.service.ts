@@ -52,6 +52,31 @@ export async function resolveCollectionContractAddress(collectionId: string): Pr
   return addr;
 }
 
+// Reverse of resolveCollectionContractAddress -- every wave-scoped sync
+// function (nft_wave_sync_sold, _schedule, _price, _treasury_close) filters
+// by wave_number alone, which is NOT collection-unique (every collection has
+// its own waves 1-7). Without resolving which collection actually emitted
+// this event, syncing one collection's WaveSold/WaveClosedTreasury/etc could
+// silently overwrite a DIFFERENT collection's same-numbered wave.
+async function resolveCollectionIdFromContractAddress(contractAddress: string): Promise<string | null> {
+  const { rows } = await pool.query(
+    "SELECT id FROM nft_collections WHERE LOWER(contract_address) = LOWER($1)",
+    [contractAddress],
+  );
+  return rows[0]?.id ?? null;
+}
+
+// Must be called right after nft_collections.contract_address changes for a
+// collection (redeploy) -- otherwise every getContract*ForCollection() call
+// keeps returning the OLD contract instance forever (confirmed 2026-09-10:
+// "Push Schedule to Chain" landed on the old contract after a redeploy,
+// showing real schedule+6 mints on the stale one while the new contract sat
+// at epoch-zero -- only fixed that time by restarting the whole server).
+export function invalidateCollectionContractCache(collectionId: string): void {
+  _contractROByCollection.delete(collectionId);
+  _contractSignedByCollection.delete(collectionId);
+}
+
 export async function getContractReadOnlyForCollection(collectionId: string): Promise<Contract> {
   const cached = _contractROByCollection.get(collectionId);
   if (cached) return cached;
@@ -188,8 +213,17 @@ async function syncEvent(
   args: unknown[],
   txHash: string | null,
   blockNumber: number,
-  logIndex: number
+  logIndex: number,
+  contractAddress: string
 ): Promise<void> {
+  // On-chain reads inside this function (waveSoldCount, treasuryWallet,
+  // getTokenWave, ...) MUST hit the contract that actually emitted this log,
+  // not the legacy getContractReadOnly() singleton -- for a collection-wise
+  // deploy those are two different addresses, and reading the wrong one
+  // silently produces wrong data (e.g. comparing a mint's `to` against the
+  // LEGACY contract's treasuryWallet() instead of this collection's own).
+  const emittingContract = new ethers.Contract(contractAddress, BearthNFT_ABI, getProvider());
+  const collectionId = await resolveCollectionIdFromContractAddress(contractAddress);
   try {
     if (txHash) {
       await pool.query(
@@ -204,8 +238,8 @@ async function syncEvent(
         const [waveNum, buyer, qty] = args as [bigint, string, bigint];
         const waveNumN = Number(waveNum);
         const isWl = waveNumN === 1;
-        const onChainCount: bigint = await getContractReadOnly().waveSoldCount(waveNum);
-        await pool.query("SELECT nft_wave_sync_sold($1,$2,$3)", [waveNumN, Number(onChainCount), txHash]);
+        const onChainCount: bigint = await emittingContract.waveSoldCount(waveNum);
+        await pool.query("SELECT nft_wave_sync_sold($1,$2,$3,$4)", [waveNumN, Number(onChainCount), txHash, collectionId]);
         await pool.query("SELECT nft_wallet_sync_mint($1,$2,$3,$4)", [buyer.toLowerCase(), Number(qty), isWl || null, txHash]);
         // Auto-register buyer (creates customer user if wallet has no user_id)
         await pool.query("SELECT customer_wallet_auto_register($1, $2)", [buyer.toLowerCase(), "customer_mint"]);
@@ -214,22 +248,24 @@ async function syncEvent(
 
       case "WaveScheduleUpdated": {
         const [waveNum, startTime, endTime] = args as [bigint, bigint, bigint];
-        await pool.query("SELECT nft_wave_sync_schedule($1,$2,$3,$4)", [
+        await pool.query("SELECT nft_wave_sync_schedule($1,$2,$3,$4,$5)", [
           Number(waveNum),
           new Date(Number(startTime) * 1000).toISOString(),
           new Date(Number(endTime) * 1000).toISOString(),
           txHash,
+          collectionId,
         ]);
         break;
       }
 
       case "WavePriceUpdated": {
         const [waveNum, newPrice] = args as [bigint, bigint];
-        await pool.query("SELECT nft_wave_sync_price($1,$2,$3,$4)", [
+        await pool.query("SELECT nft_wave_sync_price($1,$2,$3,$4,$5)", [
           Number(waveNum),
           Number(ethers.formatEther(newPrice)),
           false,
           txHash,
+          collectionId,
         ]);
         break;
       }
@@ -237,8 +273,8 @@ async function syncEvent(
       case "WaveClosedTreasury": {
         // WaveClosedTreasury(waveNum indexed, recipient indexed, qty)
         const [waveNum, recipient, qty] = args as [bigint, string, bigint];
-        await pool.query("SELECT nft_wave_sync_treasury_close($1,$2,$3,$4)", [
-          Number(waveNum), recipient.toLowerCase(), Number(qty), txHash,
+        await pool.query("SELECT nft_wave_sync_treasury_close($1,$2,$3,$4,$5)", [
+          Number(waveNum), recipient.toLowerCase(), Number(qty), txHash, collectionId,
         ]);
         break;
       }
@@ -253,7 +289,7 @@ async function syncEvent(
       case "WaveRevealed": {
         // WaveRevealed(waveNum indexed, uri, timestamp)
         const [waveNum, uri] = args as [bigint, string, bigint];
-        await pool.query("SELECT nft_wave_sync_reveal($1,$2,$3)", [Number(waveNum), uri, txHash]);
+        await pool.query("SELECT nft_wave_sync_reveal($1,$2,$3,$4)", [Number(waveNum), uri, txHash, collectionId]);
         break;
       }
 
@@ -299,9 +335,13 @@ async function syncEvent(
         const tokenIdN = Number(tokenId);
         if (from === ethers.ZeroAddress) {
           // Mint event — sync DB record and log
-          const waveNum: bigint = await getContractReadOnly().getTokenWave(tokenId);
+          const waveNum: bigint = await emittingContract.getTokenWave(tokenId);
           const waveNumN = Number(waveNum);
-          await pool.query("SELECT nft_record_sync_mint($1,$2,$3,$4)", [tokenIdN, to.toLowerCase(), waveNumN, txHash]);
+          // Treasury-swept (unsold) mints must NOT display the same "sold"
+          // status as a real customer purchase -- see task #29/#28 (2026-09-10).
+          const treasuryWallet: string = await emittingContract.treasuryWallet();
+          const isTreasury = to.toLowerCase() === treasuryWallet.toLowerCase();
+          await pool.query("SELECT nft_record_sync_mint($1,$2,$3,$4,$5,$6)", [tokenIdN, to.toLowerCase(), waveNumN, txHash, collectionId, isTreasury]);
           logNftActivity({ tokenId: tokenIdN, action: "mint", source: "on_chain", platform: "bearth", toWallet: to.toLowerCase(), txHash: txHash ?? undefined, blockNumber, details: { waveNumber: waveNumN } });
           break;
         }
@@ -329,38 +369,42 @@ async function syncEvent(
     console.error(`[contract.service] Failed to sync event ${eventName}:`, err);
   }
 }
-async function syncReceiptLogs(receipt: ethers.TransactionReceipt): Promise<void> {
-  const contract = getContractReadOnly();
-  const iface = contract.interface;
+export async function syncReceiptLogs(receipt: ethers.TransactionReceipt): Promise<void> {
+  const iface = new ethers.Interface(BearthNFT_ABI);
   for (const log of receipt.logs) {
     try {
       const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
       if (!parsed) continue;
+      // log.address is the contract that actually emitted this event -- NOT
+      // necessarily receipt.to (e.g. a proxy-routed call) or the legacy
+      // getContractReadOnly() singleton. Pass it through so syncEvent reads
+      // on-chain state (waveSoldCount, treasuryWallet, ...) from the right place.
       await syncEvent(
         parsed.name,
         [...parsed.args],
         receipt.hash,
         receipt.blockNumber,
-        log.index
+        log.index,
+        log.address
       );
     } catch {
       // Unknown event from another contract in the same tx  skip
     }
   }
 }
-export function startEventListeners(): void {
-  if (process.env.VERCEL) return;
+const WATCHED_EVENTS = [
+  "WaveSold", "WaveScheduleUpdated", "WavePriceUpdated", "WaveRevealed",
+  "PhaseChanged", "PurchaseLimitChanged", "VIPStatusChanged",
+  "WaveClosedTreasury", "RoyaltyUpdated", "SBTChanged", "TokenSBTChanged", "Transfer",
+  "TransferValidatorUpdated", "Paused", "Unpaused",
+];
 
-  const contract = getContractReadOnly();
-
-  const watchedEvents = [
-    "WaveSold", "WaveScheduleUpdated", "WavePriceUpdated", "WaveRevealed",
-    "PhaseChanged", "PurchaseLimitChanged", "VIPStatusChanged",
-    "WaveClosedTreasury", "RoyaltyUpdated", "SBTChanged", "TokenSBTChanged", "Transfer",
-    "TransferValidatorUpdated", "Paused", "Unpaused",
-  ];
-
-  // Guard: only register events that exist in the deployed ABI.
+// Attaches live event listeners to ONE specific contract address. A customer
+// wallet minting directly on-chain (via Bearth-FE, its own signer -- never
+// touching this server) can ONLY ever be picked up by a listener like this;
+// there is no other sync path for that case. Used both for the legacy
+// single-collection contract and for every collection-wise deploy below.
+function attachListenersFor(contract: Contract, label: string): number {
   const abiEventNames = new Set(
     contract.interface.fragments
       .filter((f) => f.type === "event")
@@ -368,24 +412,67 @@ export function startEventListeners(): void {
   );
 
   let registered = 0;
-  for (const eventName of watchedEvents) {
-    if (!abiEventNames.has(eventName)) {
-      console.warn(`[contract.service] Skipping unknown event '${eventName}' (not in ABI)`);
-      continue;
-    }
+  for (const eventName of WATCHED_EVENTS) {
+    if (!abiEventNames.has(eventName)) continue;
     try {
       contract.on(eventName, async (...rawArgs: unknown[]) => {
         const ev = rawArgs[rawArgs.length - 1] as EventLog;
         const args = rawArgs.slice(0, -1);
-        await syncEvent(eventName, args, ev.transactionHash ?? null, ev.blockNumber, ev.index);
+        await syncEvent(eventName, args, ev.transactionHash ?? null, ev.blockNumber, ev.index, String(contract.target));
       });
       registered++;
     } catch (err) {
-      console.warn(`[contract.service] Could not register listener for '${eventName}':`, err);
+      console.warn(`[contract.service] (${label}) Could not register listener for '${eventName}':`, err);
     }
   }
+  return registered;
+}
 
-  console.log(`[contract.service] Event listeners started on ${process.env.CONTRACT_ADDRESS} (${registered}/${watchedEvents.length} events)`);
+// Registers event listeners for one freshly-deployed collection's contract
+// immediately, rather than waiting for the next server restart to pick it up
+// (startEventListeners() below only ever runs once, at boot -- confirmed
+// 2026-09-10: a real customer mint on a same-session redeploy never synced
+// until the whole server was manually restarted). Call this right after a
+// deploy writes the new contract_address to nft_collections.
+export async function attachListenersForCollection(collectionId: string): Promise<void> {
+  const { rows } = await pool.query<{ name: string; contract_address: string }>(
+    "SELECT name, contract_address FROM nft_collections WHERE id = $1 AND contract_address IS NOT NULL",
+    [collectionId],
+  );
+  const row = rows[0];
+  if (!row) return;
+  const contract = new ethers.Contract(row.contract_address, BearthNFT_ABI, getProvider());
+  const count = attachListenersFor(contract, row.name);
+  console.log(`[contract.service] Event listeners attached post-deploy on ${row.contract_address} (${row.name}, ${count}/${WATCHED_EVENTS.length} events)`);
+}
+
+export async function startEventListeners(): Promise<void> {
+  if (process.env.VERCEL) return;
+
+  // Legacy single-collection contract (Contract Operations page) -- unchanged.
+  const legacy = getContractReadOnly();
+  const legacyCount = attachListenersFor(legacy, "legacy");
+  console.log(`[contract.service] Event listeners started on ${process.env.CONTRACT_ADDRESS} (${legacyCount}/${WATCHED_EVENTS.length} events)`);
+
+  // Every collection-wise deploy also needs its own listeners -- otherwise a
+  // real customer's on-chain mint on THAT contract never syncs to nft_records
+  // at all (confirmed 2026-09-10: 5 real CW1-5 mints stayed "pre_mint" in the
+  // NFT List page indefinitely). See task #25/#29 for the fuller fix (removing
+  // the legacy single-contract concept entirely); this is the minimum needed
+  // so collection-wise mints actually sync.
+  try {
+    const { rows } = await pool.query<{ id: string; name: string; contract_address: string }>(
+      `SELECT id, name, contract_address FROM nft_collections WHERE contract_address IS NOT NULL`
+    );
+    for (const row of rows) {
+      if (row.contract_address.toLowerCase() === String(legacy.target).toLowerCase()) continue; // already attached
+      const contract = new ethers.Contract(row.contract_address, BearthNFT_ABI, getProvider());
+      const count = attachListenersFor(contract, row.name);
+      console.log(`[contract.service] Event listeners started on ${row.contract_address} (${row.name}, ${count}/${WATCHED_EVENTS.length} events)`);
+    }
+  } catch (err) {
+    console.warn("[contract.service] Could not attach collection-wise event listeners:", err);
+  }
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
@@ -427,7 +514,7 @@ export async function resyncFromBlock(fromBlock = 0): Promise<{ synced: number; 
         if (!parsed) continue;
         await syncEvent(
           parsed.name, [...parsed.args],
-          log.transactionHash, log.blockNumber, log.index
+          log.transactionHash, log.blockNumber, log.index, log.address
         );
         synced++;
       } catch {
