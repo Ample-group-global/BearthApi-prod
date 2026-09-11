@@ -157,11 +157,12 @@ router.put("/:id/sbt", requireAdmin, async (req, res, next) => {
 });
 
 // POST /api/nfts/bulk-transfer — transfer treasury-held tokens to a recipient wallet
-// Body: { tokenIds: number[], recipient: string }
+// Body: { tokenIds: number[], recipient: string, collectionId: string }
 // Max 50 tokens per call; treasury wallet (FIXED_PRIVATE_KEY) must own all tokens
+const BULK_TRANSFER_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
   try {
-    const { tokenIds, recipient } = req.body as { tokenIds: number[]; recipient: string };
+    const { tokenIds, recipient, collectionId } = req.body as { tokenIds: number[]; recipient: string; collectionId?: string };
 
     if (!Array.isArray(tokenIds) || tokenIds.length === 0)
       return res.status(400).json({ error: "tokenIds array is required" });
@@ -169,25 +170,30 @@ router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
       return res.status(400).json({ error: "Maximum 50 tokens per batch" });
     if (!/^0x[0-9a-fA-F]{40}$/.test(recipient))
       return res.status(400).json({ error: "recipient must be a valid Ethereum address" });
+    if (!collectionId || !BULK_TRANSFER_UUID_RE.test(collectionId))
+      return res.status(400).json({ error: "collectionId is required" });
 
     // Verify all tokens are treasury-held (delivery_status = 'treasury_wallet')
+    // AND belong to this collection -- without the collection_id filter, two
+    // collections sharing the same numeric token_id (each contract numbers
+    // its own tokens from 1) would match both rows here.
     const { rows: statusRows } = await pool.query<{ token_id: number; code: string }>(
       `SELECT nr.token_id, lv.code
          FROM nft_records nr
          JOIN lookup_values lv ON lv.id = nr.delivery_status_id
-        WHERE nr.token_id = ANY($1::int[])`,
-      [tokenIds],
+        WHERE nr.token_id = ANY($1::int[]) AND nr.collection_id = $2::uuid`,
+      [tokenIds, collectionId],
     );
 
     const statusMap = new Map(statusRows.map((r: { token_id: number; code: string }) => [r.token_id, r.code]));
     const nonTreasury = tokenIds.filter(id => statusMap.get(id) !== "treasury_wallet");
     if (nonTreasury.length > 0)
       return res.status(400).json({
-        error: `Tokens not in treasury_wallet status: ${nonTreasury.join(", ")}. Only treasury-held NFTs can be transferred via this endpoint.`,
+        error: `Tokens not in treasury_wallet status for this collection: ${nonTreasury.join(", ")}. Only treasury-held NFTs can be transferred via this endpoint.`,
       });
 
     const { contractTransferFromBatch } = await import("../services/contract.service");
-    const results = await contractTransferFromBatch(tokenIds, recipient);
+    const results = await contractTransferFromBatch(tokenIds, recipient, collectionId);
 
     const transferredIds = results.map((r: { tokenId: number; txHash: string }) => r.tokenId);
     if (transferredIds.length > 0) {
@@ -197,8 +203,8 @@ router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
                 delivered_at       = NOW(),
                 owner_address      = $2,
                 updated_at         = NOW()
-          WHERE token_id = ANY($1::int[])`,
-        [transferredIds, recipient.toLowerCase()],
+          WHERE token_id = ANY($1::int[]) AND collection_id = $3::uuid`,
+        [transferredIds, recipient.toLowerCase(), collectionId],
       );
     }
 

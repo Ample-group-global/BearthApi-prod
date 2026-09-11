@@ -696,15 +696,21 @@ export async function contractBlockAccount(
 
 export async function contractTransferFromBatch(
   tokenIds: number[],
-  recipient: string
+  recipient: string,
+  collectionId: string
 ): Promise<{ tokenId: number; txHash: string }[]> {
   if (!ethers.isAddress(recipient)) throw new Error("Invalid recipient address");
   if (!tokenIds.length) throw new Error("tokenIds must not be empty");
   if (tokenIds.length > 50) throw new Error("Maximum 50 tokens per batch");
-  const treasury = (await getContractReadOnly().treasuryWallet()) as string;
+  // Previously always read the legacy singleton's treasury wallet and called
+  // transferFrom against it regardless of collectionId -- a real token ID
+  // collision between two collections (each numbers its own tokens from 1)
+  // would silently transfer from the wrong collection's treasury.
+  const contract = await getContractReadOnlyForCollection(collectionId);
+  const treasury = (await contract.treasuryWallet()) as string;
   const results: { tokenId: number; txHash: string }[] = [];
   for (const tokenId of tokenIds) {
-    const receipt = await callContract("transferFrom", [treasury, recipient, BigInt(tokenId)]);
+    const receipt = await callContract("transferFrom", [treasury, recipient, BigInt(tokenId)], {}, collectionId);
     results.push({ tokenId, txHash: receipt.hash });
   }
   return results;
