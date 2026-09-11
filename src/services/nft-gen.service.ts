@@ -703,7 +703,9 @@ export async function syncFromFilebaseBucket(bucket: string, collectionId: strin
 
   const cids = fbRows.map(r => r.image_ipfs_hash);
   const { rows: giRows } = await pool.query(
-    `SELECT id, ipfs_image_cid FROM nft_generated_items WHERE collection_id = $1::uuid AND ipfs_image_cid = ANY($2::text[])`,
+    `SELECT gi.id, gi.ipfs_image_cid FROM nft_generated_items gi
+       JOIN nft_generation_jobs gj ON gj.id = gi.job_id
+      WHERE gj.collection_id = $1::uuid AND gi.ipfs_image_cid = ANY($2::text[])`,
     [collectionId, cids],
   );
   const cidToItemId = new Map<string, string>(giRows.map(r => [r.ipfs_image_cid, r.id]));
