@@ -49,7 +49,20 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
   }
 
   if (!process.env.ETH_RPC_URL || !process.env.FIXED_PRIVATE_KEY) {
-    console.log(`[reveal] Wave ${waveNum}: no signer env vars — DB-only reveal (dev mode)`);
+    // Reveal is an irreversible, customer-facing lifecycle step -- missing
+    // signer env vars alone used to be enough to silently mark a wave
+    // "revealed" in the DB with no on-chain action at all, indistinguishable
+    // from a real success to the caller. That's a real risk in any real
+    // deploy (a secret rotation gap, a misconfigured env var), not just
+    // local dev. Requiring an explicit opt-in flag means this can only ever
+    // happen when someone deliberately turns it on, never by accident.
+    if (process.env.ALLOW_DB_ONLY_REVEAL !== "true") {
+      throw new Error(
+        `Wave ${waveNum}: ETH_RPC_URL and/or FIXED_PRIVATE_KEY are not set -- cannot reveal on-chain. ` +
+        `Set ALLOW_DB_ONLY_REVEAL=true explicitly if this is intentional (local dev only, never a real deploy).`
+      );
+    }
+    console.log(`[reveal] Wave ${waveNum}: no signer env vars, ALLOW_DB_ONLY_REVEAL=true -- DB-only reveal (dev mode)`);
     await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, null, null, null);
     return null;
   }

@@ -366,7 +366,10 @@ router.post("/:num/reveal", async (req, res, next) => {
       }
     }
 
-    res.json({ ok: true, txHash, waveNumber: num, autoTreasuryTxHash });
+    // txHash is only ever null via the explicit-opt-in ALLOW_DB_ONLY_REVEAL
+    // dev path (reveal.service.ts) -- flag it so the caller can't mistake a
+    // DB-only fake reveal for a real on-chain one.
+    res.json({ ok: true, txHash, devOnly: txHash === null, waveNumber: num, autoTreasuryTxHash });
   } catch (err) {
     next(err);
   }
