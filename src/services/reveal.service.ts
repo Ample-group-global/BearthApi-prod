@@ -4,6 +4,7 @@ import { ethers } from "ethers";
 import GenesisABI from "../abi/BearthNFT.abi.json";
 import CoordinatorABI from "../abi/BearthRevealCoordinator.abi.json";
 import { resolveCollectionContractAddress } from "./contract.service";
+import { getProvider } from "../utils/contract-factory";
 
 function getSigner(): ethers.Wallet {
   const rpcUrl = process.env.ETH_RPC_URL;
@@ -41,8 +42,9 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
     id: string;
     wave_number: number;
     wave_reveal_uri: string | null;
+    quantity: number;
   }>(
-    "SELECT id, wave_number, wave_reveal_uri FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+    "SELECT id, wave_number, wave_reveal_uri, quantity FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
     [waveNum, collectionId],
   );
   if (!waveRows.length) throw new Error(`Wave ${waveNum} not found`);
@@ -139,7 +141,25 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
   const txHash = receipt.hash;
   console.log(`[reveal] Wave ${waveNum}: revealed directly, tx: ${txHash}`);
 
-  await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, txHash, null, 0);
+  // BearthNFT.sol's revealWave() computes its own starting index on-chain
+  // (`block.prevrandao % qty`, see contract source) purely for its own
+  // internal tokenURI() mapping -- _syncRevealedMetadata no longer needs this
+  // value at all (it reads tokenURI() directly per token now, see below), so
+  // this is recorded only as an audit trail of what actually happened
+  // on-chain. No fallback: if it can't be recovered correctly, record
+  // nothing rather than a wrong number that reads as real data later. The
+  // on-chain reveal itself already happened and is immutable regardless.
+  const block = await signer.provider!.getBlock(receipt.blockNumber);
+  if (!block?.prevRandao) {
+    throw new Error(
+      `Wave ${waveNum}: revealWave() succeeded on-chain (tx ${txHash}) but could not read prevRandao from block ${receipt.blockNumber} to record the real starting index. ` +
+      `The reveal itself is final and correct -- this only affects the DB audit trail. Investigate the RPC/provider before retrying.`
+    );
+  }
+  const startingIndexNum = Number(BigInt(block.prevRandao) % BigInt(wave.quantity));
+  console.log(`[reveal] Wave ${waveNum}: startingIndex (recovered from block ${receipt.blockNumber}) = ${startingIndexNum}`);
+
+  await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, txHash, null, startingIndexNum);
   await _syncRevealedMetadata(waveNum, collectionId);
   return txHash;
 }
@@ -265,21 +285,16 @@ async function fetchFolderMetadata(folderCid: string, edition: number, attempt =
 }
 
 export async function _syncRevealedMetadata(waveNum: number, collectionId: string): Promise<void> {
-  const { rows: waveRows } = await pool.query<{
-    quantity: number;
-    starting_index: number | null;
-    wave_reveal_uri: string | null;
-  }>(
-    `SELECT quantity, starting_index, wave_reveal_uri FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
+  const { rows: waveRows } = await pool.query<{ wave_reveal_uri: string | null }>(
+    `SELECT wave_reveal_uri FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
     [waveNum, collectionId],
   );
   if (!waveRows.length) return;
-  const { quantity: waveQty, starting_index: startingIndex, wave_reveal_uri: revealUri } = waveRows[0];
+  const { wave_reveal_uri: revealUri } = waveRows[0];
   if (!revealUri) {
     console.warn(`[reveal] Wave ${waveNum}: no wave_reveal_uri set, cannot sync metadata`);
     return;
   }
-  const folderCid = revealUri.replace(/^ipfs:\/\//, "");
 
   const { rows: mintedTokens } = await pool.query<{ id: string; token_id: number }>(
     `SELECT id, token_id FROM nft_records WHERE on_chain_wave_num = $1 AND collection_id = $2 AND token_id IS NOT NULL`,
@@ -290,31 +305,64 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
     return;
   }
 
-  console.log(`[reveal] Wave ${waveNum}: syncing artwork for ${mintedTokens.length} tokens directly from folder CID ${folderCid} (startingIndex=${startingIndex ?? "none"})…`);
+  console.log(`[reveal] Wave ${waveNum}: syncing artwork for ${mintedTokens.length} tokens…`);
 
-  const assignments = mintedTokens.map(({ id, token_id }) => {
-    const artworkEdition = startingIndex != null
-      ? ((token_id - 1 + startingIndex) % waveQty) + 1
-      : token_id;
-    return { id, token_id, artworkEdition };
-  });
+  // Which artwork edition a token maps to used to be recomputed off-chain
+  // (`(token_id - 1 + startingIndex) % qty) + 1`) -- a second, independent
+  // implementation of math the contract already does in tokenURI(). Two
+  // sources of truth for the same computation drift: this one silently did
+  // STRING CONCATENATION instead of addition whenever startingIndex came
+  // back from Postgres as a string (bigint columns aren't numbers to `pg`),
+  // and separately assumed every wave starts at token 1 (only true for
+  // Wave 1 -- BearthNFT.sol actually bases the formula on each wave's own
+  // _waveFirstTokenId). Confirmed live 2026-09-11: replaying that exact
+  // formula against real data produced wrong values. Rather than fix the
+  // off-chain formula to match the contract's exactly, read the contract's
+  // own tokenURI() directly per token instead -- there is now exactly one
+  // place this computation exists (the contract), and it stays correct
+  // automatically even if the contract's own shuffle logic ever changes.
+  const contractAddress = await resolveCollectionContractAddress(collectionId);
+  const nft = new ethers.Contract(contractAddress, GenesisABI, getProvider());
 
-  // Fetch each unique edition's REAL frozen file exactly once, then apply to
-  // every token assigned that edition -- not a DB self-join.
-  const uniqueEditions = [...new Set(assignments.map(a => a.artworkEdition))];
-  const editionMap = new Map<number, Awaited<ReturnType<typeof fetchFolderMetadata>>>();
+  const assignments: { id: string; token_id: number; folderCid: string; artworkEdition: number }[] = [];
   const CONCURRENCY = 5;
-  for (let i = 0; i < uniqueEditions.length; i += CONCURRENCY) {
-    const batch = uniqueEditions.slice(i, i + CONCURRENCY);
-    await Promise.all(batch.map(async (edition) => {
-      editionMap.set(edition, await fetchFolderMetadata(folderCid, edition));
+  for (let i = 0; i < mintedTokens.length; i += CONCURRENCY) {
+    const batch = mintedTokens.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async ({ id, token_id }) => {
+      try {
+        const uri = await (nft.tokenURI as (id: bigint) => Promise<string>)(BigInt(token_id));
+        // ipfs://<folderCid>/<metadataId>.json
+        const withoutScheme = uri.replace(/^ipfs:\/\//, "");
+        const slashIdx = withoutScheme.lastIndexOf("/");
+        const folderCid = withoutScheme.slice(0, slashIdx);
+        const artworkEdition = parseInt(withoutScheme.slice(slashIdx + 1).replace(/\.json$/, ""), 10);
+        if (!folderCid || isNaN(artworkEdition)) {
+          console.warn(`[reveal] Wave ${waveNum} token ${token_id}: could not parse tokenURI '${uri}'`);
+          return;
+        }
+        assignments.push({ id, token_id, folderCid, artworkEdition });
+      } catch (err) {
+        console.warn(`[reveal] Wave ${waveNum} token ${token_id}: tokenURI() call failed:`, err);
+      }
+    }));
+  }
+
+  // Fetch each unique (folder, edition) file exactly once, then apply to
+  // every token assigned that edition -- not a DB self-join.
+  const uniqueKeys = [...new Set(assignments.map(a => `${a.folderCid}/${a.artworkEdition}`))];
+  const editionMap = new Map<string, Awaited<ReturnType<typeof fetchFolderMetadata>>>();
+  for (let i = 0; i < uniqueKeys.length; i += CONCURRENCY) {
+    const batch = uniqueKeys.slice(i, i + CONCURRENCY);
+    await Promise.all(batch.map(async (key) => {
+      const [folderCid, editionStr] = [key.slice(0, key.lastIndexOf("/")), key.slice(key.lastIndexOf("/") + 1)];
+      editionMap.set(key, await fetchFolderMetadata(folderCid, Number(editionStr)));
     }));
   }
 
   let synced = 0;
   let missing = 0;
-  for (const { id, token_id, artworkEdition } of assignments) {
-    const artwork = editionMap.get(artworkEdition);
+  for (const { id, token_id, folderCid, artworkEdition } of assignments) {
+    const artwork = editionMap.get(`${folderCid}/${artworkEdition}`);
     if (!artwork) {
       missing++;
       console.warn(`[reveal] Wave ${waveNum} token ${token_id}: could not fetch edition #${artworkEdition} from folder CID`);
@@ -338,7 +386,7 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
     );
     synced++;
   }
-  console.log(`[reveal] Wave ${waveNum}: artwork sync complete — ${synced} updated, ${missing} missing`);
+  console.log(`[reveal] Wave ${waveNum}: artwork sync complete — ${synced} updated, ${missing} missing (of ${mintedTokens.length} minted)`);
 
   // Same 1%/5%/15% percentage thresholds generate.ts's computeRarity() uses
   // at generation time (the canonical source) — this was previously a fixed
