@@ -126,9 +126,11 @@ router.put("/blind-box-uri", async (req, res, next) => {
 router.put("/treasury", async (req, res, next) => {
   try {
     const { userId } = requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { wallet } = req.body as { wallet?: string };
     if (!wallet) return res.status(422).json({ error: "wallet required" });
-    const result = await scheduleTreasuryWalletChange(wallet, userId);
+    const result = await scheduleTreasuryWalletChange(wallet, userId, collectionId);
     res.json({ ok: true, scheduled: true, ...result });
   } catch (err) { next(err); }
 });
@@ -136,7 +138,9 @@ router.put("/treasury", async (req, res, next) => {
 router.get("/treasury/timelock-status", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
-    const status = await getLatestTimelockOp("setTreasuryWallet");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const status = await getLatestTimelockOp("setTreasuryWallet", collectionId);
     res.json({ status });
   } catch (err) { next(err); }
 });
@@ -144,9 +148,11 @@ router.get("/treasury/timelock-status", async (req, res, next) => {
 router.post("/treasury/execute", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { operationId } = req.body as { operationId?: string };
     if (!operationId) return res.status(422).json({ error: "operationId required" });
-    const result = await executeTimelockOp(operationId);
+    const result = await executeTimelockOp(operationId, collectionId);
     res.json({ ok: true, txHash: result.txHash });
   } catch (err) { next(err); }
 });

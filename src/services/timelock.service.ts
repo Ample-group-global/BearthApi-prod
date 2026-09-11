@@ -4,6 +4,7 @@ import BearthTimelock_ABI from "../abi/BearthTimelock.abi.json";
 import BearthNFT_ABI from "../abi/BearthNFT.abi.json";
 import { getProvider } from "../utils/contract-factory";
 import { HttpError } from "../errors";
+import { resolveCollectionContractAddress } from "./contract.service";
 
 // BearthTimelock (OZ TimelockController, 48h delay) gates setTreasuryWallet on
 // the main contract. Every operation needs the exact same (target, value,
@@ -71,12 +72,15 @@ async function runTimelockCall<T>(label: string, fn: () => Promise<T>): Promise<
  */
 export async function scheduleTreasuryWalletChange(
   newWallet: string,
-  createdBy: string | null
+  createdBy: string | null,
+  collectionId: string
 ): Promise<{ operationId: string; eta: string; scheduledTxHash: string }> {
   if (!ethers.isAddress(newWallet)) throw new HttpError(400, "Invalid treasury wallet address");
 
-  const contractAddress = process.env.CONTRACT_ADDRESS;
-  if (!contractAddress) throw new Error("CONTRACT_ADDRESS env var is required");
+  // Previously always targeted the legacy global CONTRACT_ADDRESS -- a
+  // treasury wallet change scheduled for one collection would silently
+  // apply to whichever contract that env var happened to point to instead.
+  const contractAddress = await resolveCollectionContractAddress(collectionId);
 
   const data = nftInterface.encodeFunctionData("setTreasuryWallet", [newWallet]);
   const salt = ethers.hexlify(ethers.randomBytes(32));
@@ -96,9 +100,9 @@ export async function scheduleTreasuryWalletChange(
 
   await pool.query(
     `INSERT INTO treasury_timelock_ops
-       (operation_id, purpose, target, value_wei, call_data, predecessor, salt, new_value, eta, scheduled_tx_hash, created_by)
-     VALUES ($1,'setTreasuryWallet',$2,'0',$3,$4,$5,$6,$7,$8,$9)`,
-    [operationId, contractAddress, data, predecessor, salt, newWallet, eta.toISOString(), receipt.hash, createdBy]
+       (operation_id, purpose, target, value_wei, call_data, predecessor, salt, new_value, eta, scheduled_tx_hash, created_by, collection_id)
+     VALUES ($1,'setTreasuryWallet',$2,'0',$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [operationId, contractAddress, data, predecessor, salt, newWallet, eta.toISOString(), receipt.hash, createdBy, collectionId]
   );
 
   return { operationId, eta: eta.toISOString(), scheduledTxHash: receipt.hash };
@@ -116,13 +120,13 @@ export interface TimelockOpStatus {
   executedAt: string | null;
 }
 
-/** Latest non-cancelled operation for a purpose, with live on-chain ready/done state. */
-export async function getLatestTimelockOp(purpose: string): Promise<TimelockOpStatus | null> {
+/** Latest non-cancelled operation for a purpose+collection, with live on-chain ready/done state. */
+export async function getLatestTimelockOp(purpose: string, collectionId: string): Promise<TimelockOpStatus | null> {
   const { rows } = await pool.query(
     `SELECT * FROM treasury_timelock_ops
-     WHERE purpose = $1 AND cancelled_at IS NULL
+     WHERE purpose = $1 AND collection_id = $2 AND cancelled_at IS NULL
      ORDER BY created_at DESC LIMIT 1`,
-    [purpose]
+    [purpose, collectionId]
   );
   const row = rows[0];
   if (!row) return null;
@@ -147,13 +151,17 @@ export async function getLatestTimelockOp(purpose: string): Promise<TimelockOpSt
 }
 
 /** Execute a previously-scheduled operation once it's ready (past its ETA). */
-export async function executeTimelockOp(operationId: string): Promise<{ txHash: string }> {
+export async function executeTimelockOp(operationId: string, collectionId: string): Promise<{ txHash: string }> {
   const { rows } = await pool.query(
     `SELECT * FROM treasury_timelock_ops WHERE operation_id = $1`,
     [operationId]
   );
   const row = rows[0];
   if (!row) throw new HttpError(404, "No scheduled operation found with that id");
+  // The target/data/predecessor/salt already fully determine what executes --
+  // this check exists purely to catch "wrong collection tab open" mistakes,
+  // not because execution itself could otherwise touch the wrong contract.
+  if (row.collection_id !== collectionId) throw new HttpError(400, "This operation was not scheduled for the selected collection");
   if (row.executed_at) throw new HttpError(400, "This operation has already been executed");
 
   const timelockRO = getTimelockReadOnly();
@@ -171,12 +179,12 @@ export async function executeTimelockOp(operationId: string): Promise<{ txHash: 
     [operationId, receipt.hash]
   );
 
-  if (row.purpose === "setTreasuryWallet" && row.new_value) {
-    await pool.query(
-      `UPDATE nft_collection_config SET treasury_wallet = $1, updated_at = NOW() WHERE id = 1`,
-      [row.new_value]
-    );
-  }
+  // Previously also cached the new value into nft_collection_config (the
+  // legacy global singleton, id=1) -- confirmed dead: nothing anywhere reads
+  // that column, and it would have overwritten the same shared row
+  // regardless of which collection this operation was actually for. The
+  // real treasury wallet is always read live from the collection's own
+  // contract (treasuryWallet()), so there's nothing to cache here.
 
   return { txHash: receipt.hash };
 }
