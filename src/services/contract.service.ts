@@ -415,6 +415,39 @@ export async function startEventListeners(): Promise<void> {
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+// Some RPC providers (e.g. Alchemy's free tier) hard-cap eth_getLogs to a
+// tiny block range (10 blocks) regardless of the range requested -- a
+// fixed 500-block CHUNK would 400 on every single chunk against such a
+// provider, silently skipping the collection's entire mint/reveal/etc.
+// history. Detected live 2026-09-11: a real customer mint succeeded
+// on-chain but never reached the DB because of exactly this.
+function isBlockRangeLimitError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return /block range|up to a \d+ block range/i.test(message);
+}
+
+async function getLogsWithAdaptiveRange(
+  provider: ethers.Provider,
+  contractAddress: string,
+  fromBlock: number,
+  toBlock: number,
+): Promise<Awaited<ReturnType<typeof provider.getLogs>>> {
+  try {
+    return await provider.getLogs({ address: contractAddress, fromBlock, toBlock });
+  } catch (err) {
+    if (!isBlockRangeLimitError(err) || fromBlock >= toBlock) throw err;
+    // Split in half and retry each half -- converges quickly (log2) even
+    // against a 10-block-max provider, without permanently paying the cost
+    // of tiny chunks when the provider doesn't actually need them.
+    const mid = fromBlock + Math.floor((toBlock - fromBlock) / 2);
+    const [first, second] = await Promise.all([
+      getLogsWithAdaptiveRange(provider, contractAddress, fromBlock, mid),
+      getLogsWithAdaptiveRange(provider, contractAddress, mid + 1, toBlock),
+    ]);
+    return [...first, ...second];
+  }
+}
+
 export async function resyncFromBlock(fromBlock = 0, collectionId?: string): Promise<{ synced: number; scannedBlocks: number; skippedChunks: number }> {
   const provider = getProvider();
   const contract = collectionId ? await getContractReadOnlyForCollection(collectionId) : getContractReadOnly();
@@ -435,11 +468,7 @@ export async function resyncFromBlock(fromBlock = 0, collectionId?: string): Pro
 
     let logs: Awaited<ReturnType<typeof provider.getLogs>> = [];
     try {
-      logs = await provider.getLogs({
-        address: contractAddress,
-        fromBlock: cursor,
-        toBlock: end,
-      });
+      logs = await getLogsWithAdaptiveRange(provider, contractAddress!, cursor, end);
     } catch (chunkErr) {
       console.error(`[resync] getLogs chunk ${cursor}-${end} failed, skipping:`, chunkErr);
       skippedChunks++;
