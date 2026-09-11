@@ -11,6 +11,7 @@ import {
   contractPause,
   contractUnpause,
   contractBlockAccount,
+  contractSetPurchaseLimitConfig,
 } from "../../services/contract.service";
 import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } from "../../services/timelock.service";
 
@@ -75,6 +76,21 @@ router.put("/sbt", async (req, res, next) => {
     const { enabled } = req.body as { enabled?: boolean };
     if (typeof enabled !== "boolean") return res.status(422).json({ error: "enabled (boolean) required" });
     const receipt = await contractSetSBT(enabled, collectionId);
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+router.put("/purchase-limit", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const { enabled, normalMaxPerWallet } = req.body as { enabled?: boolean; normalMaxPerWallet?: number };
+    if (typeof enabled !== "boolean") return res.status(422).json({ error: "enabled (boolean) required" });
+    if (!Number.isInteger(normalMaxPerWallet) || normalMaxPerWallet! < 1) {
+      return res.status(422).json({ error: "normalMaxPerWallet must be a whole number >= 1" });
+    }
+    const receipt = await contractSetPurchaseLimitConfig(enabled, normalMaxPerWallet!, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });

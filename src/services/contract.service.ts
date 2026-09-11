@@ -560,10 +560,11 @@ export async function contractSetVIP(
 
 export async function contractSetPurchaseLimitConfig(
   enabled: boolean,
-  normalMaxPerWallet: number
+  normalMaxPerWallet: number,
+  collectionId: string,
 ): Promise<ethers.TransactionReceipt> {
   if (normalMaxPerWallet < 1) throw new Error("Max per wallet must be at least 1");
-  return callContract("setPurchaseLimitConfig", [enabled, normalMaxPerWallet]);
+  return callContract("setPurchaseLimitConfig", [enabled, normalMaxPerWallet], {}, collectionId);
 }
 
 export async function contractSetPhase(
