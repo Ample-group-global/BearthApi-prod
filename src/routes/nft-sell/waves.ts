@@ -303,15 +303,23 @@ router.post("/:num/reveal", async (req, res, next) => {
     if (!collectionId) return;
 
     const { rows: waveCheck } = await pool.query(
-      "SELECT wave_number, wave_closed, reveal_scheduled_at, is_revealed, reveal_strategy FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+      "SELECT wave_number, scheduled_end, reveal_scheduled_at, is_revealed, reveal_strategy FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
       [num, collectionId],
     );
     const wv = waveCheck[0];
     if (!wv) return res.status(404).json({ error: `Wave ${num} not found` });
     if (wv.is_revealed)
       return res.status(409).json({ error: `Wave ${num} has already been revealed.` });
-    if (!wv.wave_closed)
-      return res.status(409).json({ error: `Wave ${num} must be closed before it can be revealed. Wait for the wave end time to pass.` });
+    // Gate on the wave's mint window having actually ended -- matches the
+    // on-chain revealWave()'s real precondition (block.timestamp >
+    // waveEndTime). wave_closed is NOT that signal: it only becomes true
+    // via treasuryClose(), and treasuryClose() itself refuses to run before
+    // reveal whenever a wave has real sales (see BearthNFT.sol treasuryClose:
+    // "(!noSales && !waveRevealed[waveNum]) revert WaveStillActive()"). Gating
+    // reveal on wave_closed created a genuine deadlock for any wave with real
+    // customer sales -- found 2026-09-11 while prepping Test1's Wave 1 reveal.
+    if (!wv.scheduled_end || new Date() <= new Date(wv.scheduled_end))
+      return res.status(409).json({ error: `Wave ${num} must wait for the wave end time to pass before it can be revealed.` });
     if (wv.reveal_strategy !== 'manual' && !wv.reveal_scheduled_at)
       return res.status(409).json({ error: `Wave ${num} has no reveal date set. Set a reveal date first via the Waves page.` });
 
