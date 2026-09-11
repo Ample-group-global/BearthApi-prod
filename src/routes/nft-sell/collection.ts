@@ -12,6 +12,7 @@ import {
   contractUnpause,
   contractBlockAccount,
   contractSetPurchaseLimitConfig,
+  contractSetPhase,
 } from "../../services/contract.service";
 import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } from "../../services/timelock.service";
 
@@ -91,6 +92,20 @@ router.put("/purchase-limit", async (req, res, next) => {
       return res.status(422).json({ error: "normalMaxPerWallet must be a whole number >= 1" });
     }
     const receipt = await contractSetPurchaseLimitConfig(enabled, normalMaxPerWallet!, collectionId);
+    res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+router.put("/phase", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const { phase } = req.body as { phase?: number };
+    if (phase !== 0 && phase !== 1 && phase !== 2) {
+      return res.status(422).json({ error: "phase must be 0 (Whitelist), 1 (PaidMint), or 2 (Revealed)" });
+    }
+    const receipt = await contractSetPhase(phase, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });

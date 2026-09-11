@@ -577,9 +577,10 @@ export async function contractSetPurchaseLimitConfig(
 }
 
 export async function contractSetPhase(
-  phase: 0 | 1 | 2
+  phase: 0 | 1 | 2,
+  collectionId: string,
 ): Promise<ethers.TransactionReceipt> {
-  return callContract("setPhase", [phase]);
+  return callContract("setPhase", [phase], {}, collectionId);
 }
 
 export async function contractSetAllowlistRoot(
