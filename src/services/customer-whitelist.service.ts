@@ -3,14 +3,14 @@ import { buildMerkleTree } from "../merkle";
 import { contractSetAllowlistRoot } from "./contract.service";
 import { keepAlive } from "../utils/taskProgress";
 
-async function rebuildMerkleAndPush(): Promise<void> {
+async function rebuildMerkleAndPush(collectionId?: string): Promise<void> {
   const { rows } = await pool.query("SELECT * FROM whitelist_addresses_all()");
   const addresses = rows.map((r: { address: string }) => r.address);
   if (!addresses.length) return;
   const { root } = buildMerkleTree(addresses);
   await pool.query("SELECT whitelist_state_update_root($1)", [root]);
   try {
-    await contractSetAllowlistRoot(root);
+    await contractSetAllowlistRoot(root, collectionId);
     await pool.query("SELECT whitelist_state_record_push_attempt($1, true, NULL)", [root]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -22,9 +22,15 @@ async function rebuildMerkleAndPush(): Promise<void> {
   }
 }
 
-export function triggerChainSync(): void {
+// collectionId is optional and, when omitted, falls back to the legacy
+// single-contract env var (CONTRACT_ADDRESS) via callContract() -- this
+// whitelist roster is still global, not per-collection (that redesign is
+// tracked separately), but callers that DO know which collection's
+// contract needs the root pushed can now say so instead of silently
+// hitting whatever CONTRACT_ADDRESS happens to point at.
+export function triggerChainSync(collectionId?: string): void {
   keepAlive(
-    rebuildMerkleAndPush().catch(err => {
+    rebuildMerkleAndPush(collectionId).catch(err => {
       console.error(
         "[customer-whitelist] Chain sync failed:",
         err instanceof Error ? err.message : String(err)
@@ -85,7 +91,7 @@ export interface PushChainResult {
   txHash: string;
 }
 
-export async function pushEffectiveRootOnChain(): Promise<PushChainResult> {
+export async function pushEffectiveRootOnChain(collectionId?: string): Promise<PushChainResult> {
   const { rows } = await pool.query(
     "SELECT merkle_root, manual_override FROM whitelist_state WHERE id = 1"
   );
@@ -103,7 +109,7 @@ export async function pushEffectiveRootOnChain(): Promise<PushChainResult> {
   }
 
   try {
-    const receipt = await contractSetAllowlistRoot(root);
+    const receipt = await contractSetAllowlistRoot(root, collectionId);
     await pool.query("SELECT whitelist_state_record_push_attempt($1, true, NULL)", [root]);
     return { root, txHash: receipt.hash };
   } catch (err) {
@@ -115,13 +121,14 @@ export async function pushEffectiveRootOnChain(): Promise<PushChainResult> {
 
 export async function autoRegisterAndSync(
   address: string,
-  source: string
+  source: string,
+  collectionId?: string,
 ): Promise<void> {
   await pool.query(
     "SELECT customer_wallet_auto_register($1, $2)",
     [address.toLowerCase(), source]
   );
-  triggerChainSync();
+  triggerChainSync(collectionId);
 }
 
 export async function requireRegisteredWallets(wallets: string[]): Promise<void> {

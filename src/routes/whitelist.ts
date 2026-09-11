@@ -231,7 +231,8 @@ router.post("/register", async (req: Request, res: Response, next: NextFunction)
 router.post("/push-chain", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
-    const { root, txHash } = await pushEffectiveRootOnChain();
+    const { collectionId } = (req.body ?? {}) as { collectionId?: string };
+    const { root, txHash } = await pushEffectiveRootOnChain(collectionId);
     res.json({ success: true, root, txHash });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
