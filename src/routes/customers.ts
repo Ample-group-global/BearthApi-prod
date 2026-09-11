@@ -4,6 +4,7 @@ import * as customersService from "../services/customers.service";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE_RE = /^[+\d\s\-().]{6,20}$/;
+const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
 
 function validateCustomerBody(body: Record<string, unknown>, requireContact = false): string | null {
   const firstName = (body.firstName as string | undefined)?.trim() ?? "";
@@ -112,7 +113,11 @@ router.post("/:id/wallets", async (req, res, next) => {
   try {
     requirePermission(req, "customers.edit");
     const { address } = req.body ?? {};
-    const wallet = await customersService.addCustomerWallet(req.params.id, address ?? null);
+    if (!address || !ETH_ADDRESS_RE.test(address)) {
+      res.status(422).json({ error: "Valid wallet address (0x + 40 hex) is required." });
+      return;
+    }
+    const wallet = await customersService.addCustomerWallet(req.params.id, address);
     res.status(201).json({ wallet });
   } catch (e) { next(e); }
 });
