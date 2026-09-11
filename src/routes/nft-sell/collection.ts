@@ -16,17 +16,30 @@ import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } 
 
 const router = Router();
 
+// Mirrors nft-sell/waves.ts's requireCollectionId -- every action on this
+// page must be scoped to a real collection, never the legacy singleton
+// contract (feedback-no-shared-contract-standing-policy.md).
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+function requireCollectionId(req: import("express").Request, res: import("express").Response): string | null {
+  const v = (req.query.collection_id ?? req.body?.collectionId) as string | undefined;
+  if (v && UUID_RE.test(v)) return v;
+  res.status(400).json({ error: "collection_id is required" });
+  return null;
+}
+
 // GET /api/nft-sell/collection — DB config + live on-chain snapshot for the
 // Contract Operations page header + Mint Operations tab.
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
-    const { rows } = await pool.query("SELECT * FROM nft_collection_config WHERE id = 1");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const { rows } = await pool.query("SELECT * FROM nft_collections WHERE id = $1", [collectionId]);
     const config = rows[0] ?? null;
 
     const [onChainInfo, revealRows] = await Promise.all([
-      contractGetCollectionInfo(),
-      pool.query("SELECT COUNT(*) FILTER (WHERE wave_revealed) AS n FROM nft_waves"),
+      contractGetCollectionInfo(collectionId),
+      pool.query("SELECT COUNT(*) FILTER (WHERE wave_revealed) AS n FROM nft_waves WHERE collection_id = $1", [collectionId]),
     ]);
 
     const onChain = {
@@ -67,9 +80,11 @@ router.get("/events", async (req, res, next) => {
 router.put("/sbt", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { enabled } = req.body as { enabled?: boolean };
     if (typeof enabled !== "boolean") return res.status(422).json({ error: "enabled (boolean) required" });
-    const receipt = await contractSetSBT(enabled);
+    const receipt = await contractSetSBT(enabled, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
@@ -79,10 +94,12 @@ router.put("/sbt", async (req, res, next) => {
 router.post("/admin-mint", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { to, qty } = req.body as { to?: string; qty?: number };
     if (!to) return res.status(422).json({ error: "to (wallet address) required" });
     if (!qty || qty < 1) return res.status(422).json({ error: "qty must be >= 1" });
-    const receipt = await contractReserveMint(to, qty, 0);
+    const receipt = await contractReserveMint(to, qty, 0, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
@@ -91,10 +108,12 @@ router.post("/admin-mint", async (req, res, next) => {
 router.put("/blind-box-uri", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { uri } = req.body as { uri?: string };
     if (!uri) return res.status(422).json({ error: "uri required" });
-    const receipt = await contractSetBlindBoxURI(uri);
-    await pool.query("UPDATE nft_collection_config SET blind_box_uri = $1, updated_at = NOW() WHERE id = 1", [uri]);
+    const receipt = await contractSetBlindBoxURI(uri, collectionId);
+    await pool.query("UPDATE nft_collections SET blind_box_uri = $1, updated_at = NOW() WHERE id = $2", [uri, collectionId]);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
@@ -136,7 +155,9 @@ router.post("/treasury/execute", async (req, res, next) => {
 router.post("/withdraw", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
-    const receipt = await contractWithdraw();
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const receipt = await contractWithdraw(collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
@@ -145,7 +166,9 @@ router.post("/withdraw", async (req, res, next) => {
 router.post("/pause", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
-    const receipt = await contractPause();
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const receipt = await contractPause(collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
@@ -153,22 +176,24 @@ router.post("/pause", async (req, res, next) => {
 router.post("/unpause", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
-    const receipt = await contractUnpause();
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const receipt = await contractUnpause(collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
 
 // PUT /api/nft-sell/collection/block-account — OPERATOR_ROLE-gated, blocks/
-// unblocks a wallet from minting and transfers. Pre-mainnet checklist item #3
-// -- contractBlockAccount() already existed in the service layer but had no
-// route anywhere until now.
+// unblocks a wallet from minting and transfers.
 router.put("/block-account", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { wallet, blocked } = req.body as { wallet?: string; blocked?: boolean };
     if (!wallet || !ethers.isAddress(wallet)) return res.status(422).json({ error: "Valid wallet address required" });
     if (typeof blocked !== "boolean") return res.status(422).json({ error: "blocked (boolean) required" });
-    const receipt = await contractBlockAccount(wallet, blocked);
+    const receipt = await contractBlockAccount(wallet, blocked, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });

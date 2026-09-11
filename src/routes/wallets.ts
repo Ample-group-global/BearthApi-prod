@@ -10,6 +10,7 @@ import { keepAlive } from "../utils/taskProgress";
 const router = Router();
 
 const ETH_ADDRESS_RE = /^0x[a-fA-F0-9]{40}$/;
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 const connectLimit = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: "draft-7", legacyHeaders: false });
 const readLimit = rateLimit({ windowMs: 60_000, limit: 100, standardHeaders: "draft-7", legacyHeaders: false });
@@ -115,7 +116,11 @@ router.post("/:address/block", writeLimit, async (req: Request, res: Response, n
       res.status(422).json({ error: "Invalid Ethereum address" });
       return;
     }
-    const { reason, onChain = true } = (req.body ?? {}) as { reason?: string; onChain?: boolean };
+    const { reason, onChain = true, collectionId } = (req.body ?? {}) as { reason?: string; onChain?: boolean; collectionId?: string };
+    if (onChain && (!collectionId || !UUID_RE.test(collectionId))) {
+      res.status(400).json({ error: "collectionId is required to block this wallet on-chain" });
+      return;
+    }
 
     const client = await pool.connect();
     let dbRow: Record<string, unknown>;
@@ -135,7 +140,7 @@ router.post("/:address/block", writeLimit, async (req: Request, res: Response, n
     let txHash: string | null = null;
     if (onChain) {
       try {
-        const receipt = await contractBlockAccount(address, true);
+        const receipt = await contractBlockAccount(address, true, collectionId as string);
         txHash = receipt.hash;
       } catch (chainErr) {
         res.status(207).json({
@@ -174,7 +179,11 @@ router.delete("/:address/block", writeLimit, async (req: Request, res: Response,
       res.status(422).json({ error: "Invalid Ethereum address" });
       return;
     }
-    const { onChain = true } = (req.body ?? {}) as { onChain?: boolean };
+    const { onChain = true, collectionId } = (req.body ?? {}) as { onChain?: boolean; collectionId?: string };
+    if (onChain && (!collectionId || !UUID_RE.test(collectionId))) {
+      res.status(400).json({ error: "collectionId is required to unblock this wallet on-chain" });
+      return;
+    }
 
     const { rows } = await pool.query("SELECT * FROM wallet_unblock($1)", [address]);
     if (!rows[0]) throw new HttpError(404, "Wallet not found");
@@ -182,7 +191,7 @@ router.delete("/:address/block", writeLimit, async (req: Request, res: Response,
     let txHash: string | null = null;
     if (onChain) {
       try {
-        const receipt = await contractBlockAccount(address, false);
+        const receipt = await contractBlockAccount(address, false, collectionId as string);
         txHash = receipt.hash;
       } catch (chainErr) {
         res.status(207).json({

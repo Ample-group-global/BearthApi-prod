@@ -6,12 +6,22 @@ import { contractSetRoyalty, contractSetTransferValidator } from "../../services
 
 const router = Router();
 
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+function requireCollectionId(req: import("express").Request, res: import("express").Response): string | null {
+  const v = (req.query.collection_id ?? req.body?.collectionId) as string | undefined;
+  if (v && UUID_RE.test(v)) return v;
+  res.status(400).json({ error: "collection_id is required" });
+  return null;
+}
+
 // GET /api/nft-sell/royalty — current ERC2981 royalty config (DB mirror,
 // kept in sync by contract.service.ts's RoyaltyUpdated event handler).
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
-    const { rows } = await pool.query("SELECT * FROM nft_royalty_config_get()");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const { rows } = await pool.query("SELECT * FROM nft_royalty_config_get($1)", [collectionId]);
     res.json({ royalty: rows[0] ?? null });
   } catch (err) { next(err); }
 });
@@ -22,10 +32,12 @@ router.get("/", async (req, res, next) => {
 router.put("/", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { receiverAddress, feeBps } = req.body as { receiverAddress?: string; feeBps?: number };
     if (!receiverAddress || !ethers.isAddress(receiverAddress)) return res.status(422).json({ error: "Valid receiverAddress required" });
     if (feeBps === undefined || feeBps < 0 || feeBps > 1000) return res.status(422).json({ error: "feeBps must be 0-1000" });
-    const receipt = await contractSetRoyalty(receiverAddress, feeBps);
+    const receipt = await contractSetRoyalty(receiverAddress, feeBps, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
@@ -34,11 +46,13 @@ router.put("/", async (req, res, next) => {
 router.put("/enforcement", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { enforced } = req.body as { enforced?: boolean };
     if (typeof enforced !== "boolean") return res.status(422).json({ error: "enforced (boolean) required" });
-    const current = (await pool.query("SELECT * FROM nft_royalty_config_get()")).rows[0];
-    await pool.query("SELECT nft_royalty_config_upsert($1,$2,$3,$4)", [
-      current?.royalty_pct_bps ?? 0, current?.receiver_address ?? null, enforced, current?.last_tx_hash ?? null,
+    const current = (await pool.query("SELECT * FROM nft_royalty_config_get($1)", [collectionId])).rows[0];
+    await pool.query("SELECT nft_royalty_config_upsert($1,$2,$3,$4,$5)", [
+      current?.royalty_pct_bps ?? 0, current?.receiver_address ?? null, enforced, current?.last_tx_hash ?? null, collectionId,
     ]);
     res.json({ ok: true });
   } catch (err) { next(err); }
@@ -48,9 +62,11 @@ router.put("/enforcement", async (req, res, next) => {
 router.put("/transfer-validator", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const { validatorAddress } = req.body as { validatorAddress?: string };
     if (!validatorAddress || !ethers.isAddress(validatorAddress)) return res.status(422).json({ error: "Valid validatorAddress required" });
-    const receipt = await contractSetTransferValidator(validatorAddress);
+    const receipt = await contractSetTransferValidator(validatorAddress, collectionId);
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });

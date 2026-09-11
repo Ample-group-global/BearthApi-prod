@@ -175,10 +175,15 @@ router.put("/:num/schedule", async (req, res, next) => {
 
     const now = Date.now();
     const { rows: curRows } = await pool.query(
-      "SELECT scheduled_start, wave_start_triggered, wave_closed FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+      "SELECT scheduled_start, wave_start_triggered, wave_closed, purchase_limit_confirmed FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
       [num, collectionId],
     );
     const cur = curRows[0];
+    if (!cur?.purchase_limit_confirmed) {
+      return res.status(409).json({
+        error: `Wave ${num}'s purchase limit has not been explicitly set yet. Set it (even to "use global limit") via the purchase-limit action before scheduling this wave.`,
+      });
+    }
     if (cur?.wave_closed) {
       return res.status(409).json({
         error: `Wave ${num} is already closed schedule cannot be changed.`,
@@ -289,9 +294,11 @@ router.put("/:num/purchase-limit", async (req, res, next) => {
 
     const receipt = await contractSetWavePurchaseLimit(num, maxPerWallet, collectionId);
 
-    // Mirror to DB
+    // Mirror to DB -- purchase_limit_confirmed flips TRUE here regardless of
+    // the chosen value (including 0, which means "use the global limit"):
+    // calling this route at all IS the explicit confirmation (task #45).
     await pool.query(
-      "UPDATE nft_waves SET max_per_wallet = $2, updated_at = NOW() WHERE wave_number = $1 AND collection_id = $3",
+      "UPDATE nft_waves SET max_per_wallet = $2, purchase_limit_confirmed = TRUE, updated_at = NOW() WHERE wave_number = $1 AND collection_id = $3",
       [num, maxPerWallet, collectionId],
     );
 

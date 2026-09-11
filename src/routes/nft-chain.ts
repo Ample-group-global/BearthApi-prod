@@ -85,9 +85,11 @@ router.get("/owned", async (req, res, next) => {
  * Force-transfer a specific NFT token. Requires EMERGENCY_ROLE on the contract.
  * Signs via server FIXED_PRIVATE_KEY — no browser wallet needed.
  */
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
 router.post("/emergency-transfer", requireAdmin, async (req, res, next) => {
-  const { tokenId, from, to, reason } = req.body as {
-    tokenId?: unknown; from?: unknown; to?: unknown; reason?: unknown;
+  const { tokenId, from, to, reason, collectionId } = req.body as {
+    tokenId?: unknown; from?: unknown; to?: unknown; reason?: unknown; collectionId?: unknown;
   };
   if (typeof tokenId !== "number" || tokenId < 1) {
     res.status(400).json({ error: "tokenId must be a positive integer" });
@@ -105,12 +107,17 @@ router.post("/emergency-transfer", requireAdmin, async (req, res, next) => {
     res.status(400).json({ error: "reason is required" });
     return;
   }
+  if (!collectionId || !UUID_RE.test(String(collectionId))) {
+    res.status(400).json({ error: "collectionId is required" });
+    return;
+  }
   try {
     const receipt = await contractEmergencyTransfer(
       tokenId,
       String(from).toLowerCase(),
       String(to).toLowerCase(),
-      String(reason).trim()
+      String(reason).trim(),
+      String(collectionId)
     );
     res.json({ txHash: receipt.hash, blockNumber: receipt.blockNumber });
   } catch (e) {

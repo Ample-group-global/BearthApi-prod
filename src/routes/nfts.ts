@@ -133,15 +133,15 @@ router.put("/:id/sbt", requireAdmin, async (req, res, next) => {
     const { enabled } = req.body as { enabled: boolean };
     if (typeof enabled !== "boolean")
       return res.status(400).json({ error: "enabled (boolean) required" });
-    const { rows } = await pool.query<{ token_id: number | null }>(
-      "SELECT token_id FROM nft_records WHERE id = $1::uuid",
+    const { rows } = await pool.query<{ token_id: number | null; collection_id: string }>(
+      "SELECT token_id, collection_id FROM nft_records WHERE id = $1::uuid",
       [req.params.id],
     );
     if (!rows[0]) return res.status(404).json({ error: "NFT not found" });
     if (!rows[0].token_id) return res.status(400).json({ error: "Token not yet minted on-chain" });
     const { contractSetTokenSBT } = await import("../services/contract.service");
     const { userId: sbtActorId } = requireRole(req);
-    const receipt = await contractSetTokenSBT(rows[0].token_id, enabled);
+    const receipt = await contractSetTokenSBT(rows[0].token_id, enabled, rows[0].collection_id);
     logNftActivity({
       tokenId: rows[0].token_id,
       action: enabled ? "soulbound_set" : "soulbound_remove",

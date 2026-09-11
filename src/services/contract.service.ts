@@ -282,7 +282,7 @@ async function syncEvent(
       case "PhaseChanged": {
         const [newPhase] = args as [number];
         const phaseNames = ["Whitelist", "PaidMint", "Revealed"];
-        await pool.query("SELECT nft_collection_config_update($1,$2)", [null, phaseNames[newPhase] ?? "Whitelist"]);
+        await pool.query("SELECT nft_collection_config_update($1,$2)", [collectionId, phaseNames[newPhase] ?? "Whitelist"]);
         break;
       }
 
@@ -301,16 +301,16 @@ async function syncEvent(
 
       case "PurchaseLimitChanged": {
         const [enabled, maxPerWallet] = args as [boolean, bigint];
-        await pool.query("SELECT nft_purchase_limit_upsert($1,$2,$3)", [enabled, Number(maxPerWallet), txHash]);
+        await pool.query("SELECT nft_purchase_limit_upsert($1,$2,$3)", [enabled, Number(maxPerWallet), collectionId]);
         break;
       }
 
       case "RoyaltyUpdated": {
         const [receiver, feeBasisPoints] = args as [string, bigint];
-        const { rows } = await pool.query("SELECT nft_royalty_config_get()");
-        const current = rows[0]?.nft_royalty_config_get ?? {};
-        await pool.query("SELECT nft_royalty_config_upsert($1,$2,$3,$4)", [
-          Number(feeBasisPoints), receiver.toLowerCase(), current.enforce_royalty ?? true, txHash,
+        const { rows } = await pool.query("SELECT * FROM nft_royalty_config_get($1)", [collectionId]);
+        const current = rows[0] ?? {};
+        await pool.query("SELECT nft_royalty_config_upsert($1,$2,$3,$4,$5)", [
+          Number(feeBasisPoints), receiver.toLowerCase(), current.enforce_royalty ?? true, txHash, collectionId,
         ]);
         break;
       }
@@ -565,18 +565,20 @@ export async function contractTreasuryClose(
 
 export async function contractSetRoyalty(
   receiverAddress: string,
-  feeBps: number
+  feeBps: number,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (feeBps < 0 || feeBps > 1000) throw new Error("Royalty basis points must be 0–1000 (max 10%)");
   if (!ethers.isAddress(receiverAddress)) throw new Error("Invalid receiver address");
-  return callContract("setRoyalty", [receiverAddress, feeBps]);
+  return callContract("setRoyalty", [receiverAddress, feeBps], {}, collectionId);
 }
 
 export async function contractSetTransferValidator(
-  validatorAddress: string
+  validatorAddress: string,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (!ethers.isAddress(validatorAddress)) throw new Error("Invalid validator address");
-  return callContract("setTransferValidator", [validatorAddress]);
+  return callContract("setTransferValidator", [validatorAddress], {}, collectionId);
 }
 
 export async function contractSetVIP(
@@ -619,67 +621,73 @@ export async function contractSetTreasuryWallet(
   return callContract("setTreasuryWallet", [wallet]);
 }
 
-export async function contractWithdraw(): Promise<ethers.TransactionReceipt> {
-  return callContract("withdraw", []);
+export async function contractWithdraw(collectionId: string): Promise<ethers.TransactionReceipt> {
+  return callContract("withdraw", [], {}, collectionId);
 }
 
 export async function contractReserveMint(
   to: string,
   qty: number,
-  waveNum: number = 0
+  waveNum: number = 0,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (!ethers.isAddress(to)) throw new Error("Invalid recipient address");
   if (qty < 1) throw new Error("Quantity must be at least 1");
   if (waveNum < 0 || waveNum > 7) throw new Error("Wave number must be 0 (treasury) to 7");
-  return callContract("reserveMint", [to, qty, waveNum]);
+  return callContract("reserveMint", [to, qty, waveNum], {}, collectionId);
 }
 
 export async function contractSetSBT(
-  enabled: boolean
+  enabled: boolean,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
-  return callContract("setSBT", [enabled]);
+  return callContract("setSBT", [enabled], {}, collectionId);
 }
 
 export async function contractSetTokenSBT(
   tokenId: number,
-  enabled: boolean
+  enabled: boolean,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
-  return callContract("setTokenSBT", [tokenId, enabled]);
+  return callContract("setTokenSBT", [tokenId, enabled], {}, collectionId);
 }
 
-export async function contractPause(): Promise<ethers.TransactionReceipt> {
-  return callContract("pause", []);
+export async function contractPause(collectionId: string): Promise<ethers.TransactionReceipt> {
+  return callContract("pause", [], {}, collectionId);
 }
 
-export async function contractUnpause(): Promise<ethers.TransactionReceipt> {
-  return callContract("unpause", []);
+export async function contractUnpause(collectionId: string): Promise<ethers.TransactionReceipt> {
+  return callContract("unpause", [], {}, collectionId);
 }
 
 export async function contractSetBlindBoxURI(
-  uri: string
+  uri: string,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (!uri) throw new Error("URI is required");
-  return callContract("setBlindBoxURI", [uri]);
+  return callContract("setBlindBoxURI", [uri], {}, collectionId);
 }
 
 export async function contractEmergencyTransfer(
   id: number,
   from: string,
   to: string,
-  reason: string
+  reason: string,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (!ethers.isAddress(from)) throw new Error("Invalid from address");
   if (!ethers.isAddress(to)) throw new Error("Invalid to address");
   if (!reason?.trim()) throw new Error("reason is required");
-  return callContract("emergencyTransfer", [id, from, to, reason]);
+  return callContract("emergencyTransfer", [id, from, to, reason], {}, collectionId);
 }
 
 export async function contractBlockAccount(
   wallet: string,
-  blocked: boolean
+  blocked: boolean,
+  collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (!ethers.isAddress(wallet)) throw new Error("Invalid wallet address");
-  return callContract("blockAccount", [wallet, blocked]);
+  return callContract("blockAccount", [wallet, blocked], {}, collectionId);
 }
 
 export async function contractTransferFromBatch(
@@ -698,7 +706,7 @@ export async function contractTransferFromBatch(
   return results;
 }
 
-export async function contractGetCollectionInfo(): Promise<{
+export async function contractGetCollectionInfo(collectionId: string): Promise<{
   currentPhase: number;
   maxSupply: bigint;
   totalMinted: bigint;
@@ -706,7 +714,7 @@ export async function contractGetCollectionInfo(): Promise<{
   purchaseLimitEnabled: boolean;
   normalMaxPerWallet: bigint;
 }> {
-  const c = getContractReadOnly();
+  const c = await getContractReadOnlyForCollection(collectionId);
   const [currentPhase, maxSupply, totalMinted, sbt, purchaseLimitEnabled, normalMaxPerWallet] = await Promise.all([
     c.currentPhase() as Promise<bigint>,
     c.MAX_SUPPLY() as Promise<bigint>,
@@ -725,9 +733,9 @@ export async function contractGetCollectionInfo(): Promise<{
   };
 }
 
-export async function contractGetRoyalty(): Promise<{ receiver: string; feeBps: number } | null> {
+export async function contractGetRoyalty(collectionId: string): Promise<{ receiver: string; feeBps: number } | null> {
   try {
-    const c = getContractReadOnly();
+    const c = await getContractReadOnlyForCollection(collectionId);
     const [receiver, royaltyAmount] = await c.royaltyInfo(1, 10000) as [string, bigint];
     return { receiver, feeBps: Number(royaltyAmount) };
   } catch {
