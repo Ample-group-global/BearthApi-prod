@@ -449,10 +449,26 @@ export async function attachListenersForCollection(collectionId: string): Promis
 export async function startEventListeners(): Promise<void> {
   if (process.env.VERCEL) return;
 
-  // Legacy single-collection contract (Contract Operations page) -- unchanged.
-  const legacy = getContractReadOnly();
-  const legacyCount = attachListenersFor(legacy, "legacy");
-  console.log(`[contract.service] Event listeners started on ${process.env.CONTRACT_ADDRESS} (${legacyCount}/${WATCHED_EVENTS.length} events)`);
+  // Legacy single-collection contract (Contract Operations page). Guarded
+  // (env var checked, own try/catch) rather than called unconditionally --
+  // getContractReadOnly() THROWS if CONTRACT_ADDRESS is unset, and that used
+  // to happen before the collection-wise loop below ever ran. Since this
+  // function is synchronous top-to-bottom, that throw would have skipped
+  // attaching listeners for every real nft_collections contract too, not
+  // just the legacy one -- a landmine for the day CONTRACT_ADDRESS is finally
+  // retired per the no-shared-contract policy. No behavior change today
+  // (CONTRACT_ADDRESS is currently set, so this branch still runs the same).
+  let legacyAddress: string | null = null;
+  if (process.env.CONTRACT_ADDRESS) {
+    try {
+      const legacy = getContractReadOnly();
+      legacyAddress = String(legacy.target).toLowerCase();
+      const legacyCount = attachListenersFor(legacy, "legacy");
+      console.log(`[contract.service] Event listeners started on ${process.env.CONTRACT_ADDRESS} (${legacyCount}/${WATCHED_EVENTS.length} events)`);
+    } catch (err) {
+      console.warn("[contract.service] Could not attach legacy event listeners:", err);
+    }
+  }
 
   // Every collection-wise deploy also needs its own listeners -- otherwise a
   // real customer's on-chain mint on THAT contract never syncs to nft_records
@@ -465,7 +481,7 @@ export async function startEventListeners(): Promise<void> {
       `SELECT id, name, contract_address FROM nft_collections WHERE contract_address IS NOT NULL`
     );
     for (const row of rows) {
-      if (row.contract_address.toLowerCase() === String(legacy.target).toLowerCase()) continue; // already attached
+      if (legacyAddress && row.contract_address.toLowerCase() === legacyAddress) continue; // already attached
       const contract = new ethers.Contract(row.contract_address, BearthNFT_ABI, getProvider());
       const count = attachListenersFor(contract, row.name);
       console.log(`[contract.service] Event listeners started on ${row.contract_address} (${row.name}, ${count}/${WATCHED_EVENTS.length} events)`);
