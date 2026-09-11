@@ -10,9 +10,26 @@ router.post("/sync-from-filebase", async (req, res, next) => {
     requirePermission(req, "nft_gen.generate");
     const bucket = (req.body?.bucket as string) || "";
     if (!bucket.trim()) { res.status(422).json({ error: "bucket is required." }); return; }
-    await pool.query("DELETE FROM nft_records");
-    const result = await syncFromFilebaseBucket(bucket);
-    res.json({ bucket, ...result });
+    // Resolve the collection from the bucket's own registered mapping
+    // (nft_collections.filebase_bucket) rather than trusting a client-
+    // supplied collectionId -- this used to run with NO collection scoping
+    // at all: an unconditional DELETE FROM nft_records wiped every
+    // collection's data platform-wide, and the reinsert used
+    // ON CONFLICT (serial_number), a constraint that no longer exists
+    // (replaced by the composite (collection_id, serial_number) constraint
+    // months ago), so it always failed afterward -- leaving nft_records
+    // permanently empty for the whole platform on every use of this tool.
+    const { rows } = await pool.query(
+      `SELECT id FROM nft_collections WHERE filebase_bucket = $1`,
+      [bucket.trim()],
+    );
+    const collectionId = rows[0]?.id as string | undefined;
+    if (!collectionId) {
+      res.status(422).json({ error: `No collection is registered for bucket "${bucket.trim()}" (nft_collections.filebase_bucket) -- refusing to sync without knowing which collection this data belongs to.` });
+      return;
+    }
+    const result = await syncFromFilebaseBucket(bucket.trim(), collectionId);
+    res.json({ bucket, collectionId, ...result });
   } catch (e) {
     next(e);
   }

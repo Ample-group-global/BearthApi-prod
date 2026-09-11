@@ -631,7 +631,7 @@ function parseFilebaseTraits(json: Record<string, unknown>): Record<string, unkn
   return (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
 }
 
-export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: number; skipped: number }> {
+export async function syncFromFilebaseBucket(bucket: string, collectionId: string): Promise<{ synced: number; skipped: number }> {
   const { rows: lv } = await pool.query(
     `SELECT id, code FROM lookup_values
      WHERE (category = 'nft_stage' AND code = 'genesis')
@@ -661,6 +661,7 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
     .sort((a, b) => a - b);
 
   type ItemRow = {
+    collection_id: string;
     serial_number: string; stage_id: string; delivery_status_id: string;
     image_ipfs_hash: string; metadata_ipfs_hash: string; metadata_uri: string;
     blind_box_uri: string | null; traits: Record<string, unknown>;
@@ -680,6 +681,7 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
       ]);
       if (!imageCid || !metaCid) return null;
       return {
+        collection_id: collectionId,
         serial_number: `#${n}`,
         stage_id: genesisStageId,
         delivery_status_id: pendingStatusId,
@@ -701,42 +703,60 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
 
   const cids = fbRows.map(r => r.image_ipfs_hash);
   const { rows: giRows } = await pool.query(
-    `SELECT id, ipfs_image_cid FROM nft_generated_items WHERE ipfs_image_cid = ANY($1::text[])`,
-    [cids],
+    `SELECT id, ipfs_image_cid FROM nft_generated_items WHERE collection_id = $1::uuid AND ipfs_image_cid = ANY($2::text[])`,
+    [collectionId, cids],
   );
   const cidToItemId = new Map<string, string>(giRows.map(r => [r.ipfs_image_cid, r.id]));
   for (const row of fbRows) row.generated_item_id = cidToItemId.get(row.image_ipfs_hash) ?? null;
 
+  // Everything above this point is pure fetching (Filebase/S3 reads, no DB
+  // writes) -- only once we know fbRows is real, non-empty data do we touch
+  // nft_records at all. Delete + reinsert run in ONE transaction on a single
+  // client, scoped to this collection: if the insert fails partway through
+  // (e.g. a bad row, a DB error), the transaction rolls back and the
+  // collection's existing records are left exactly as they were, instead of
+  // deleting first and hoping the insert succeeds afterward.
+  const client = await getClient();
   let totalSynced = 0;
-  for (let i = 0; i < fbRows.length; i += 2000) {
-    const chunk = fbRows.slice(i, i + 2000);
-    const { rowCount } = await pool.query(
-      `INSERT INTO nft_records
-         (serial_number, stage_id, delivery_status_id, image_ipfs_hash, metadata_ipfs_hash,
-          metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier, generated_item_id)
-       SELECT x.serial_number, x.stage_id::uuid, x.delivery_status_id::uuid,
-              x.image_ipfs_hash, x.metadata_ipfs_hash, x.metadata_uri, x.blind_box_uri, x.traits,
-              x.rarity_score, x.rarity_rank, x.rarity_tier, x.generated_item_id::uuid
-       FROM json_to_recordset($1::json) AS x(
-         serial_number text, stage_id text, delivery_status_id text,
-         image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text,
-         blind_box_uri text, traits jsonb,
-         rarity_score numeric, rarity_rank int, rarity_tier text, generated_item_id text
-       )
-       ON CONFLICT (serial_number) DO UPDATE SET
-         image_ipfs_hash    = EXCLUDED.image_ipfs_hash,
-         metadata_ipfs_hash = EXCLUDED.metadata_ipfs_hash,
-         metadata_uri       = EXCLUDED.metadata_uri,
-         blind_box_uri      = EXCLUDED.blind_box_uri,
-         traits             = EXCLUDED.traits,
-         rarity_score       = COALESCE(EXCLUDED.rarity_score, nft_records.rarity_score),
-         rarity_rank        = COALESCE(EXCLUDED.rarity_rank,  nft_records.rarity_rank),
-         rarity_tier        = COALESCE(EXCLUDED.rarity_tier,  nft_records.rarity_tier),
-         generated_item_id  = COALESCE(EXCLUDED.generated_item_id, nft_records.generated_item_id),
-         updated_at         = NOW()`,
-      [JSON.stringify(chunk)],
-    );
-    totalSynced += rowCount ?? 0;
+  try {
+    await client.query("BEGIN");
+    await client.query("DELETE FROM nft_records WHERE collection_id = $1::uuid", [collectionId]);
+    for (let i = 0; i < fbRows.length; i += 2000) {
+      const chunk = fbRows.slice(i, i + 2000);
+      const { rowCount } = await client.query(
+        `INSERT INTO nft_records
+           (collection_id, serial_number, stage_id, delivery_status_id, image_ipfs_hash, metadata_ipfs_hash,
+            metadata_uri, blind_box_uri, traits, rarity_score, rarity_rank, rarity_tier, generated_item_id)
+         SELECT x.collection_id::uuid, x.serial_number, x.stage_id::uuid, x.delivery_status_id::uuid,
+                x.image_ipfs_hash, x.metadata_ipfs_hash, x.metadata_uri, x.blind_box_uri, x.traits,
+                x.rarity_score, x.rarity_rank, x.rarity_tier, x.generated_item_id::uuid
+         FROM json_to_recordset($1::json) AS x(
+           collection_id text, serial_number text, stage_id text, delivery_status_id text,
+           image_ipfs_hash text, metadata_ipfs_hash text, metadata_uri text,
+           blind_box_uri text, traits jsonb,
+           rarity_score numeric, rarity_rank int, rarity_tier text, generated_item_id text
+         )
+         ON CONFLICT (collection_id, serial_number) DO UPDATE SET
+           image_ipfs_hash    = EXCLUDED.image_ipfs_hash,
+           metadata_ipfs_hash = EXCLUDED.metadata_ipfs_hash,
+           metadata_uri       = EXCLUDED.metadata_uri,
+           blind_box_uri      = EXCLUDED.blind_box_uri,
+           traits             = EXCLUDED.traits,
+           rarity_score       = COALESCE(EXCLUDED.rarity_score, nft_records.rarity_score),
+           rarity_rank        = COALESCE(EXCLUDED.rarity_rank,  nft_records.rarity_rank),
+           rarity_tier        = COALESCE(EXCLUDED.rarity_tier,  nft_records.rarity_tier),
+           generated_item_id  = COALESCE(EXCLUDED.generated_item_id, nft_records.generated_item_id),
+           updated_at         = NOW()`,
+        [JSON.stringify(chunk)],
+      );
+      totalSynced += rowCount ?? 0;
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    client.release();
   }
 
   return { synced: totalSynced, skipped };
