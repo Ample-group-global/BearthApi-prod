@@ -167,6 +167,27 @@ export async function deployCollectionContract(params: {
   const coordinatorAddress = await coordinator.getAddress();
   logger.info(`[contract-deploy] RevealCoordinator deployed: ${coordinatorAddress}`);
 
+  // Chainlink's VRF Coordinator checks msg.sender against the subscription's
+  // registered consumer list -- a freshly-deployed RevealCoordinator that
+  // isn't registered will have requestReveal() revert with InvalidConsumer
+  // the first time reveal is actually triggered. Register it now, at deploy
+  // time, instead of leaving that discovery for whoever runs reveal later.
+  if (vrfSubscriptionId > 0n) {
+    const vrfAbi = [
+      "function getSubscription(uint256 subId) view returns (uint96 balance, uint96 nativeBalance, uint64 reqCount, address owner, address[] consumers)",
+      "function addConsumer(uint256 subId, address consumer)",
+    ];
+    const vrfCoordinator = new ethers.Contract(vrfCoordinatorAddr, vrfAbi, signer);
+    const sub = await vrfCoordinator.getSubscription(vrfSubscriptionId);
+    const alreadyRegistered = (sub.consumers as string[]).some(
+      (c) => c.toLowerCase() === coordinatorAddress.toLowerCase(),
+    );
+    if (!alreadyRegistered) {
+      await (await vrfCoordinator.addConsumer(vrfSubscriptionId, coordinatorAddress)).wait();
+      logger.info(`[contract-deploy] RevealCoordinator registered as VRF consumer on subscription ${vrfSubscriptionId}`);
+    }
+  }
+
   const coordinatorRevealRole = await proxyContract.REVEAL_ROLE();
   await (await proxyContract.grantRole(coordinatorRevealRole, coordinatorAddress)).wait();
   await (await proxyContract.setRevealCoordinator(coordinatorAddress)).wait();
