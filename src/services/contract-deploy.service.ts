@@ -225,7 +225,10 @@ export async function deployCollectionContract(params: {
   // held by this server, by design -- see the 5-wallet separation-of-duties
   // model). Until that acceptance happens, the deploy wallet remains the real
   // owner and this vulnerability is NOT closed -- just queued.
-  await (await coordinator.transferOwnership(adminGovernanceWallet)).wait();
+  // coordinator is untyped BaseContract (ContractFactory.deploy() return type
+  // doesn't carry its ABI's methods) -- transferOwnership exists at runtime
+  // via the ABI, TS just can't see it statically.
+  await (await (coordinator as any).transferOwnership(adminGovernanceWallet)).wait();
   logger.warn(`[contract-deploy] Coordinator ownership transfer PROPOSED to ${adminGovernanceWallet} -- ` +
     `still owned by the deploy wallet until that wallet calls acceptOwnership() on ${coordinatorAddress} directly (e.g. via Etherscan). ` +
     (network === "mainnet" ? "REQUIRED before mainnet reveal is safe." : "Recommended before treating this deploy as production-representative."));

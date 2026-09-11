@@ -476,9 +476,13 @@ export async function startEventListeners(): Promise<void> {
 }
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-export async function resyncFromBlock(fromBlock = 0): Promise<{ synced: number; scannedBlocks: number; skippedChunks: number }> {
+export async function resyncFromBlock(fromBlock = 0, collectionId?: string): Promise<{ synced: number; scannedBlocks: number; skippedChunks: number }> {
   const provider = getProvider();
-  const contract = getContractReadOnly();
+  // Without collectionId this only ever replayed the legacy global
+  // CONTRACT_ADDRESS's history -- a resync triggered for any other
+  // collection's wave silently rebuilt the wrong collection's data instead.
+  const contract = collectionId ? await getContractReadOnlyForCollection(collectionId) : getContractReadOnly();
+  const contractAddress = collectionId ? await resolveCollectionContractAddress(collectionId) : process.env.CONTRACT_ADDRESS;
   const iface = contract.interface;
   const CHUNK = 500;
   const latestBlock = await provider.getBlockNumber();
@@ -496,7 +500,7 @@ export async function resyncFromBlock(fromBlock = 0): Promise<{ synced: number; 
     let logs: Awaited<ReturnType<typeof provider.getLogs>> = [];
     try {
       logs = await provider.getLogs({
-        address: process.env.CONTRACT_ADDRESS,
+        address: contractAddress,
         fromBlock: cursor,
         toBlock: end,
       });

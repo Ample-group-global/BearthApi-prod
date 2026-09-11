@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { ethers } from "ethers";
 import { requireAdmin } from "../adminAuth";
-import { contractEmergencyTransfer, getContractReadOnly } from "../services/contract.service";
+import { contractEmergencyTransfer, getContractReadOnlyForCollection } from "../services/contract.service";
 
 const router = Router();
 const ETH_ADDR = /^0x[a-fA-F0-9]{40}$/;
@@ -126,9 +126,13 @@ router.post("/emergency-transfer", requireAdmin, async (req, res, next) => {
 });
 
 /**
- * GET /api/nft-chain/metadata/:tokenId
+ * GET /api/nft-chain/metadata/:tokenId?collectionId=...
  * Read tokenURI directly from the live contract, then fetch the IPFS JSON.
- * Use to detect DB ↔ chain desync without a browser wallet.
+ * Use to detect DB ↔ chain desync without a browser wallet. Requires
+ * collectionId -- without it this always read the legacy global
+ * CONTRACT_ADDRESS regardless of which collection the caller had selected,
+ * so verifying a token while e.g. "Bearth Test2" was selected could
+ * silently check a completely different collection's contract.
  */
 router.get("/metadata/:tokenId", requireAdmin, async (req, res, next) => {
   const tokenId = Number(req.params.tokenId);
@@ -136,8 +140,13 @@ router.get("/metadata/:tokenId", requireAdmin, async (req, res, next) => {
     res.status(400).json({ error: "tokenId must be a positive integer" });
     return;
   }
+  const { collectionId } = req.query as { collectionId?: string };
+  if (!collectionId || !UUID_RE.test(collectionId)) {
+    res.status(400).json({ error: "collectionId is required" });
+    return;
+  }
   try {
-    const contract = getContractReadOnly();
+    const contract = await getContractReadOnlyForCollection(collectionId);
     let uri: string;
     try {
       uri = await (contract.tokenURI(BigInt(tokenId)) as Promise<string>);

@@ -110,8 +110,10 @@ router.get("/treasury-nfts", async (req, res, next) => {
 router.post("/resync", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
     const fromBlock = parseInt(req.body.fromBlock ?? "0", 10);
-    resyncFromBlock(fromBlock).catch(e => console.error("[resync] background error", e));
+    resyncFromBlock(fromBlock, collectionId).catch(e => console.error("[resync] background error", e));
     res.json({ ok: true, started: true, message: "Resync started in background check server logs for progress" });
   } catch (err) {
     next(err);
