@@ -6,7 +6,7 @@ import { logNftActivity } from "../services/nft-log.service";
 
 const router = Router();
 
-router.get("/", async (req, res, next) => {
+router.get("/", requireAdmin, async (req, res, next) => {
   try {
     const {
       search, owner_address, delivery_status, stage, revealed, minted,
@@ -64,7 +64,7 @@ router.post("/bulk", requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.get("/:id", async (req, res, next) => {
+router.get("/:id", requireAdmin, async (req, res, next) => {
   try {
     const record = await nftService.getNft(req.params.id);
     if (!record) { res.status(404).json({ error: "NFT not found" }); return; }
@@ -83,7 +83,7 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/trait-stats", async (req, res, next) => {
+router.post("/trait-stats", requireAdmin, async (req, res, next) => {
   try {
     const { traits } = req.body ?? {};
     if (!traits || typeof traits !== "object" || Array.isArray(traits)) {

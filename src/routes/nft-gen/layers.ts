@@ -193,6 +193,7 @@ router.post("/upload/finalize", async (req, res, next) => {
 
 router.get("/image", async (req, res, next) => {
   try {
+    requirePermission(req, "nft_gen.view");
     const rel = req.query.rel as string | undefined;
     if (!rel || rel.includes("..") || rel.startsWith("/")) {
       res.status(400).json({ error: "Invalid rel path." });

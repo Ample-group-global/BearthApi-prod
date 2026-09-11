@@ -51,12 +51,15 @@ router.post("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.get("/:generateId", async (req, res) => {
-  const state = generateJobs.get(req.params.generateId);
-  if (state) { res.json(state); return; }
-  const db = await getTask(req.params.generateId);
-  if (!db) { res.status(404).json({ error: "Generate job not found." }); return; }
-  res.json(db);
+router.get("/:generateId", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const state = generateJobs.get(req.params.generateId);
+    if (state) { res.json(state); return; }
+    const db = await getTask(req.params.generateId);
+    if (!db) { res.status(404).json({ error: "Generate job not found." }); return; }
+    res.json(db);
+  } catch (e) { next(e); }
 });
 router.post("/preview", async (req, res, next) => {
   try {

@@ -238,10 +238,13 @@ router.post("/range", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.get("/range/:sliceKey", async (req, res) => {
-  const state = exportMeta.rangeSlices.get(req.params.sliceKey);
-  if (!state) { res.status(404).json({ error: "Export slice not found." }); return; }
-  res.json(state);
+router.get("/range/:sliceKey", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const state = exportMeta.rangeSlices.get(req.params.sliceKey);
+    if (!state) { res.status(404).json({ error: "Export slice not found." }); return; }
+    res.json(state);
+  } catch (e) { next(e); }
 });
 
 router.post("/preview", async (req, res, next) => {
@@ -283,6 +286,7 @@ router.post("/preview", async (req, res, next) => {
 });
 
 router.get("/preview/:previewId", (req, res) => {
+  requirePermission(req, "nft_gen.view");
   const state = previewMeta.jobs.get(req.params.previewId);
   if (!state) { res.status(404).json({ error: "Preview job not found." }); return; }
   const { dir, ...rest } = state;
@@ -290,6 +294,7 @@ router.get("/preview/:previewId", (req, res) => {
 });
 
 router.get("/preview/:previewId/img/:edition", (req, res) => {
+  requirePermission(req, "nft_gen.view");
   const state = previewMeta.jobs.get(req.params.previewId);
   if (!state) { res.status(404).json({ error: "Preview job not found." }); return; }
   const edition = parseInt(req.params.edition, 10);
@@ -556,12 +561,15 @@ router.post("/refresh-cids", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.get("/refresh-cids/:refreshId", async (req, res) => {
-  const state = refreshCidMeta.jobs.get(req.params.refreshId);
-  if (state) { res.json(state); return; }
-  const db = await getTask(req.params.refreshId);
-  if (!db) { res.status(404).json({ error: "Refresh job not found." }); return; }
-  res.json(db);
+router.get("/refresh-cids/:refreshId", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const state = refreshCidMeta.jobs.get(req.params.refreshId);
+    if (state) { res.json(state); return; }
+    const db = await getTask(req.params.refreshId);
+    if (!db) { res.status(404).json({ error: "Refresh job not found." }); return; }
+    res.json(db);
+  } catch (e) { next(e); }
 });
 
 router.get("/cid-status", async (req, res, next) => {
@@ -578,12 +586,15 @@ router.get("/cid-status", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.get("/:exportId", async (req, res) => {
-  const state = exportMeta.jobs.get(req.params.exportId);
-  if (state) { res.json(state); return; }
-  const db = await getTask(req.params.exportId);
-  if (!db) { res.status(404).json({ error: "Export job not found." }); return; }
-  res.json(db);
+router.get("/:exportId", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_gen.view");
+    const state = exportMeta.jobs.get(req.params.exportId);
+    if (state) { res.json(state); return; }
+    const db = await getTask(req.params.exportId);
+    if (!db) { res.status(404).json({ error: "Export job not found." }); return; }
+    res.json(db);
+  } catch (e) { next(e); }
 });
 
 export default router;
