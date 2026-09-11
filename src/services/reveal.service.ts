@@ -175,7 +175,7 @@ async function _waitForWaveRevealed(
   });
 }
 
-async function _updateWaveRevealedInDB(
+export async function _updateWaveRevealedInDB(
   waveId: string,
   waveNum: number,
   revealUri: string,
@@ -335,26 +335,25 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
   }
   console.log(`[reveal] Wave ${waveNum}: artwork sync complete — ${synced} updated, ${missing} missing (of ${mintedTokens.length} minted)`);
 
-  const { rows: supplyRows } = await pool.query(`SELECT COUNT(*) AS total FROM nft_records WHERE collection_id = $1`, [collectionId]);
-  const totalSupply = Number(supplyRows[0]?.total ?? 0);
-  const legendaryMax = Math.ceil(totalSupply * 0.01);
-  const epicMax = Math.ceil(totalSupply * 0.05);
-  const rareMax = Math.ceil(totalSupply * 0.15);
-
-  await pool.query(
-    `UPDATE nft_records SET rarity_tier = CASE
-       WHEN rarity_rank <= $2 THEN 'legendary'
-       WHEN rarity_rank <= $3 THEN 'epic'
-       WHEN rarity_rank <= $4 THEN 'rare'
-       ELSE 'common'
-     END
-     WHERE on_chain_wave_num = $1
-       AND collection_id = $5
-       AND token_id IS NOT NULL
-       AND rarity_rank IS NOT NULL
-       AND rarity_tier IS NULL`,
-    [waveNum, legendaryMax, epicMax, rareMax, collectionId],
+  // NFT Studio is the single source of truth for rarity_tier -- it's already
+  // copied straight from the frozen Filebase metadata above (artwork.attrs
+  // "Rarity Tier"). This used to independently RECOMPUTE tier here from a
+  // live percentile threshold on rarity_rank as a "fallback" for any token
+  // Filebase's metadata was missing a tier for -- but recomputing rarity
+  // anywhere outside generation is exactly the single-source-of-truth
+  // violation this platform's rarity rule forbids, even as a backstop.
+  // Confirmed live 2026-09-11: this fallback has never actually fired --
+  // all 303 real minted tokens already had rarity_tier set by the copy step
+  // above. Surface a gap instead of silently guessing one.
+  const { rows: missingTierRows } = await pool.query<{ token_id: number }>(
+    `SELECT token_id FROM nft_records
+      WHERE on_chain_wave_num = $1 AND collection_id = $2
+        AND token_id IS NOT NULL AND rarity_tier IS NULL`,
+    [waveNum, collectionId],
   );
+  if (missingTierRows.length) {
+    console.error(`[reveal] Wave ${waveNum}: ${missingTierRows.length} minted token(s) have no rarity_tier after artwork sync -- Filebase metadata is missing a Rarity Tier attribute for these editions: ${missingTierRows.map(r => r.token_id).join(", ")}. Not guessing a value; investigate the generation-time metadata directly.`);
+  }
 }
 
 export async function repairTreasuryMintsForWave(waveNum: number, collectionId: string): Promise<{ assigned: number; revealed: number }> {

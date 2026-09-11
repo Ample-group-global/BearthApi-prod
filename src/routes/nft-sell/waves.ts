@@ -14,7 +14,7 @@ import {
   resolveCollectionContractAddress,
 } from "../../services/contract.service";
 import { getProvider } from "../../utils/contract-factory";
-import { executeWaveReveal, _syncRevealedMetadata } from "../../services/reveal.service";
+import { executeWaveReveal, _syncRevealedMetadata, _updateWaveRevealedInDB } from "../../services/reveal.service";
 import { buildMerkleTree } from "../../merkle";
 import { requirePermission } from "../../adminAuth";
 
@@ -395,6 +395,7 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
       "function waveQty(uint256) external view returns (uint256)",
       "function tokenURI(uint256) external view returns (string)",
       "function waveRevealed(uint256) external view returns (bool)",
+      "event WaveRevealed(uint256 indexed waveNum, string uri, uint256 timestamp)",
     ];
     const nft = new ethers.Contract(CONTRACT_ADDR, abi, provider);
 
@@ -440,11 +441,28 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
       [num, scheduledStart, scheduledEnd, qty, startingIndex, collectionId],
     );
 
+    let revealSynced = false;
     if (isRevealed) {
+      const { rows: waveRows } = await pool.query<{ id: string }>(
+        `SELECT id FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
+        [num, collectionId],
+      );
+      const waveId = waveRows[0]?.id;
+      if (waveId) {
+        const revealEvents = await nft.queryFilter(nft.filters.WaveRevealed(num));
+        const lastEvent = revealEvents[revealEvents.length - 1] as ethers.EventLog | undefined;
+        if (lastEvent) {
+          const revealUri = lastEvent.args.uri as string;
+          await _updateWaveRevealedInDB(waveId, num, revealUri, lastEvent.transactionHash, null, startingIndex);
+          revealSynced = true;
+        } else {
+          console.warn(`[resync-reveal] Wave ${num}: on-chain waveRevealed()=true but no WaveRevealed event found (RPC log range/pruning?) -- is_revealed/wave_revealed left untouched, retry with a full-history RPC`);
+        }
+      }
       await _syncRevealedMetadata(num, collectionId);
     }
 
-    res.json({ ok: true, waveNumber: num, scheduledStart, scheduledEnd, qty, startingIndex });
+    res.json({ ok: true, waveNumber: num, scheduledStart, scheduledEnd, qty, startingIndex, revealSynced });
   } catch (err) {
     next(err);
   }
