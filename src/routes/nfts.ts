@@ -279,6 +279,25 @@ router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
       WHERE collection_id = $1
     `, [collectionId]);
 
+    // A reset that nulls wave_id/wave_num but never re-links them leaves
+    // nft_record_sync_mint() unable to find "the next unassigned row for
+    // this wave" (it depends on wave_num already being set) -- breaking
+    // minting entirely until manually re-linked. Re-link deterministically
+    // via each wave's own structural cumulative_start/cumulative_end range
+    // (same pattern as waves.ts's own wave-save linking query) immediately
+    // after nulling, so the reset is actually usable right away.
+    await pool.query(`
+      UPDATE nft_records nr SET
+        wave_id  = w.id,
+        wave_num = w.wave_number,
+        updated_at = NOW()
+      FROM nft_waves w
+      WHERE nr.collection_id = $1
+        AND w.collection_id = $1
+        AND CAST(REPLACE(nr.serial_number, '#', '') AS INTEGER)
+            BETWEEN w.cumulative_start AND w.cumulative_end
+    `, [collectionId]);
+
     await pool.query(`
       DELETE FROM nft_wave_pool
       WHERE nft_record_id IN (SELECT id FROM nft_records WHERE collection_id = $1)
