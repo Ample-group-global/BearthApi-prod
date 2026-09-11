@@ -74,11 +74,23 @@ router.get("/:id", requireAdmin, async (req, res, next) => {
 
 router.put("/:id", requireAdmin, async (req, res, next) => {
   try {
+    const { userId } = requireRole(req);
     const { stageId, nftTypeId, deliveryStatusId, notes, waveId, priceEth, clearPriceEth } = req.body ?? {};
+    const before = deliveryStatusId ? await nftService.getNft(req.params.id) : null;
     const record = await nftService.updateNft(req.params.id, {
       stageId, nftTypeId, deliveryStatusId, notes, waveId, priceEth, clearPriceEth,
     });
     if (!record) { res.status(404).json({ error: "NFT not found" }); return; }
+    if (deliveryStatusId && before && before.delivery_status_id !== deliveryStatusId) {
+      logNftActivity({
+        nftRecordId: req.params.id,
+        tokenId: record.token_id ?? undefined,
+        action: "status_change",
+        source: "off_chain",
+        actorUserId: userId,
+        details: { field: "delivery_status_id", from: before.delivery_status_id, to: deliveryStatusId },
+      });
+    }
     res.json(record);
   } catch (e) { next(e); }
 });
