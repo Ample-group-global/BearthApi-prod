@@ -327,6 +327,7 @@ router.post("/:num/reveal", async (req, res, next) => {
       [num, collectionId],
     );
     let autoTreasuryTxHash: string | null = null;
+    let autoTreasuryError: string | null = null;
     if (stratRows[0]?.unsold_strategy === 'auto_treasury') {
       try {
         const receipt = await contractTreasuryClose(num, null, collectionId);
@@ -362,14 +363,18 @@ router.post("/:num/reveal", async (req, res, next) => {
         );
         console.log(`[reveal] Wave ${num} auto-treasury-close done. txHash=${autoTreasuryTxHash}`);
       } catch (autoErr) {
+        autoTreasuryError = autoErr instanceof Error ? autoErr.message : String(autoErr);
         console.error(`[reveal] Wave ${num} auto-treasury-close FAILED (reveal still OK):`, autoErr);
       }
     }
 
     // txHash is only ever null via the explicit-opt-in ALLOW_DB_ONLY_REVEAL
     // dev path (reveal.service.ts) -- flag it so the caller can't mistake a
-    // DB-only fake reveal for a real on-chain one.
-    res.json({ ok: true, txHash, devOnly: txHash === null, waveNumber: num, autoTreasuryTxHash });
+    // DB-only fake reveal for a real on-chain one. autoTreasuryError is
+    // surfaced separately from `ok` -- the reveal itself is already final
+    // on-chain and did succeed, but a failed treasury sweep of unsold
+    // tokens must not be silently swallowed to a server log only.
+    res.json({ ok: true, txHash, devOnly: txHash === null, waveNumber: num, autoTreasuryTxHash, autoTreasuryError });
   } catch (err) {
     next(err);
   }
