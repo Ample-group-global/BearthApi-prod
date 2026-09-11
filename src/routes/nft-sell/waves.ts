@@ -361,6 +361,13 @@ router.post("/:num/reveal", async (req, res, next) => {
             WHERE wave_number = $1 AND collection_id = $2`,
           [num, collectionId],
         );
+        // treasuryClose() just minted the wave's unsold remainder with
+        // fresh token_ids -- the reveal-time _syncRevealedMetadata() call
+        // above already ran before these tokens existed, so they'd
+        // otherwise keep their token_id but never get artwork/metadata
+        // synced. Safe to call again (idempotent, just re-fetches already-
+        // synced tokens too) since wave_reveal_uri is already set.
+        await _syncRevealedMetadata(num, collectionId);
         console.log(`[reveal] Wave ${num} auto-treasury-close done. txHash=${autoTreasuryTxHash}`);
       } catch (autoErr) {
         autoTreasuryError = autoErr instanceof Error ? autoErr.message : String(autoErr);
@@ -599,6 +606,13 @@ router.post("/:num/treasury-close", async (req, res, next) => {
         WHERE wave_number = $1 AND collection_id = $2`,
       [num, collectionId],
     );
+
+    // Same gap as the auto-treasury path in /:num/reveal: treasuryClose()
+    // just minted the unsold remainder with fresh token_ids that the
+    // wave's original reveal-time sync never saw. Sync now so these
+    // treasury-owned tokens get real artwork/metadata instead of staying
+    // unsynced. No-op (warns and returns) if the wave was never revealed.
+    await _syncRevealedMetadata(num, collectionId);
 
     res.json({ ok: true, txHash: txHash ?? "already-closed" });
   } catch (err) {
