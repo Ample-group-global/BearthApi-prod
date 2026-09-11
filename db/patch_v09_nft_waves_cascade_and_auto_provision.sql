@@ -1,21 +1,3 @@
--- Two related fixes to the collection <-> waves relationship:
---
--- 1. LOOSEN deletion: nft_waves.collection_id -> nft_collections was NO ACTION
---    (the implicit default from patch_v08's plain ADD COLUMN ... REFERENCES),
---    so deleting a collection failed outright once it had any wave rows.
---    Switch to CASCADE so a collection can always be deleted cleanly, waves
---    included -- matches nft_layers/nft_traits, which already cascade.
---
--- 2. TIGHTEN creation: previously nothing created a collection's 7 wave rows
---    automatically -- they only existed if someone manually ran a backfill/
---    clone step after the fact (patch_v08's DO block, and a manual session
---    backfill for the "Bearth V1" production collection on 2026-09-04).
---    Every new collection should be wave-ready the moment it's created, with
---    no separate step. Only applies when supply = 9999 (the standard
---    Fibonacci wave template's quantities only sum correctly for that
---    supply); a non-standard-supply collection is left with zero waves, same
---    as today, and can still have rows created manually via the Waves UI.
-
 ALTER TABLE nft_waves DROP CONSTRAINT IF EXISTS nft_waves_collection_id_fkey;
 ALTER TABLE nft_waves ADD CONSTRAINT nft_waves_collection_id_fkey
   FOREIGN KEY (collection_id) REFERENCES nft_collections(id) ON DELETE CASCADE;

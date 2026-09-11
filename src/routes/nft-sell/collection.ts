@@ -16,9 +16,6 @@ import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } 
 
 const router = Router();
 
-// Mirrors nft-sell/waves.ts's requireCollectionId -- every action on this
-// page must be scoped to a real collection, never the legacy singleton
-// contract (feedback-no-shared-contract-standing-policy.md).
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 function requireCollectionId(req: import("express").Request, res: import("express").Response): string | null {
   const v = (req.query.collection_id ?? req.body?.collectionId) as string | undefined;
@@ -27,8 +24,6 @@ function requireCollectionId(req: import("express").Request, res: import("expres
   return null;
 }
 
-// GET /api/nft-sell/collection — DB config + live on-chain snapshot for the
-// Contract Operations page header + Mint Operations tab.
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
@@ -57,10 +52,6 @@ router.get("/", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/nft-sell/collection/events?limit=20 — audit log, read from
-// nft_event_log (populated by contract.service.ts's syncReceiptLogs on every
-// admin write). Column is created_at, not processed_at -- aliased to match
-// the frontend's ContractEvent shape.
 router.get("/events", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
@@ -76,7 +67,6 @@ router.get("/events", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /api/nft-sell/collection/sbt — collection-wide SBT toggle
 router.put("/sbt", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -89,8 +79,6 @@ router.put("/sbt", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/nft-sell/collection/admin-mint — treasury reserve mint (wave 0,
-// outside any wave's quota/purchase-limit).
 router.post("/admin-mint", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -104,7 +92,6 @@ router.post("/admin-mint", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /api/nft-sell/collection/blind-box-uri
 router.put("/blind-box-uri", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -118,11 +105,6 @@ router.put("/blind-box-uri", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// ── Treasury Wallet — gated behind BearthTimelock (48h delay) ────────────────
-// PUT /treasury schedules the change; GET /treasury/timelock-status reports
-// readiness; POST /treasury/execute finalizes it once ready. A direct,
-// single-step "set treasury wallet" call would simply revert on-chain, since
-// setTreasuryWallet requires TREASURY_TIMELOCK_ROLE, held only by the Timelock.
 router.put("/treasury", async (req, res, next) => {
   try {
     const { userId } = requirePermission(req, "contract_ops.manage");
@@ -157,7 +139,6 @@ router.post("/treasury/execute", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/nft-sell/collection/withdraw — sweep ETH balance to treasury wallet
 router.post("/withdraw", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -168,7 +149,6 @@ router.post("/withdraw", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// POST /api/nft-sell/collection/pause | /unpause
 router.post("/pause", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -189,8 +169,6 @@ router.post("/unpause", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// PUT /api/nft-sell/collection/block-account — OPERATOR_ROLE-gated, blocks/
-// unblocks a wallet from minting and transfers.
 router.put("/block-account", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -216,11 +194,6 @@ interface BlindBoxAssets {
   videoUrl: string | null;
 }
 
-// blind_box_uri points to a shared metadata JSON (same for every unrevealed
-// token in a wave -- verified: {"image": "ipfs://...", "animation_url":
-// "ipfs://...video/mp4..."}), not an image/video directly. Resolved once per
-// distinct URI and reused across every row that shares it, rather than
-// fetching it again per token.
 async function resolveBlindBoxAssets(
   blindBoxUri: string,
 ): Promise<BlindBoxAssets> {
@@ -237,16 +210,6 @@ async function resolveBlindBoxAssets(
   }
 }
 
-// GET /api/nft-sell/collection/tokens?owner=0x...&limit=200 — a wallet's owned
-// NFTs. Public, no auth -- called directly by Bearth-FE's Memory Hall gallery
-// (src/components/bearth/collection/MemoryHallGallery.tsx / src/lib/memory-hall.ts),
-// which has no admin session. Pre-reveal, the real artwork/rarity stay hidden
-// (is_revealed/image_ipfs_hash naturally stay null/false until the separate
-// reveal step runs -- see nft_record_sync_mint, patch_v15) but token_id and
-// the shared blind-box placeholder image/video are always shown -- neither
-// leaks anything about a specific token's eventual rarity (token_id is public
-// on-chain regardless of what this API returns; the blind-box asset is
-// identical across every sealed token in a wave).
 router.get("/tokens", async (req, res, next) => {
   try {
     const owner = String(req.query.owner ?? "").toLowerCase();
@@ -293,19 +256,9 @@ router.get("/tokens", async (req, res, next) => {
           token_id: Number(r.token_id),
           owner_address: r.owner_address,
           wave_number: r.on_chain_wave_num,
-          // rarity_tier is a static property of the pre-generated art asset a
-          // token got FCFS-linked to at mint (see nft_record_sync_mint) -- it
-          // must stay hidden pre-reveal or it defeats the point of the blind
-          // box (a high-rarity token would be identifiable by tokenId before
-          // reveal). Masked here rather than relying on the frontend to hide it.
           rarity_tier: r.is_revealed ? r.rarity_tier : null,
           traits: r.is_revealed ? r.traits : null,
           is_revealed: r.is_revealed,
-          // Same masking as rarity_tier -- image_ipfs_hash is the real,
-          // generation-time artwork hash for the row this token got linked to;
-          // the frontend already gates rendering it behind is_revealed, but
-          // that shouldn't be the only thing standing between a blind-box
-          // token and its actual artwork.
           image_ipfs_hash: r.is_revealed ? r.image_ipfs_hash : null,
           blind_box_image_url: blindBox?.imageUrl ?? null,
           blind_box_video_url: blindBox?.videoUrl ?? null,

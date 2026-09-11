@@ -1,9 +1,3 @@
--- patch_v29 added nft_collections.filebase_bucket but never surfaced it
--- through the API -- nft_gen_collection_get() (the function backing
--- GET /api/nft-gen/collections/:id) simply didn't select it, so the
--- Export panel had no way to know a collection's bucket and always fell
--- back to fully manual bucket selection. This just adds the column to the
--- existing json_build_object; no other behavior changes.
 CREATE OR REPLACE FUNCTION public.nft_gen_collection_get(p_id uuid)
  RETURNS json
  LANGUAGE plpgsql

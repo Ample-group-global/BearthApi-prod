@@ -16,10 +16,6 @@ const connectLimit = rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: "
 const readLimit = rateLimit({ windowMs: 60_000, limit: 100, standardHeaders: "draft-7", legacyHeaders: false });
 const writeLimit = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: "draft-7", legacyHeaders: false });
 
-// ── POST /api/wallets/connect ─────────────────────────────────────────────────
-// Public — no auth. Called immediately when a customer connects their wallet
-// on Bearth-FE (src/lib/wallet-register.ts). Registers the wallet if first
-// time; always returns current block/allowlist status.
 router.post("/connect", connectLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { address } = (req.body ?? {}) as { address?: string };
@@ -33,11 +29,6 @@ router.post("/connect", connectLimit, async (req: Request, res: Response, next: 
       res.status(500).json({ error: "Failed to register wallet" });
       return;
     }
-    // Auto-register: new wallets get a stub customer user created and Merkle root rebuilt.
-    // keepAlive() (Vercel's waitUntil) covers the WHOLE call, not just the
-    // on-chain push inside it -- the DB insert this kicks off is also
-    // unawaited here, so without it Vercel could tear the function down
-    // before even that completes, not just before the chain push finishes.
     if (row.registered || !row.is_whitelisted) {
       keepAlive(autoRegisterAndSync(address, "wallet_connect").catch(() => null));
     }
@@ -52,8 +43,6 @@ router.post("/connect", connectLimit, async (req: Request, res: Response, next: 
   } catch (e) { next(e); }
 });
 
-// ── GET /api/wallets ──────────────────────────────────────────────────────────
-// Admin: paginated wallet list. Pass ?blocked=true to show blocked wallets only.
 router.get("/", readLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "customers.view");
@@ -82,7 +71,6 @@ router.get("/", readLimit, async (req: Request, res: Response, next: NextFunctio
   } catch (e) { next(e); }
 });
 
-// ── GET /api/wallets/:address ─────────────────────────────────────────────────
 router.get("/:address", readLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "customers.view");
@@ -107,7 +95,6 @@ router.get("/:address", readLimit, async (req: Request, res: Response, next: Nex
   } catch (e) { next(e); }
 });
 
-// ── POST /api/wallets/:address/block ──────────────────────────────────────────
 router.post("/:address/block", writeLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "customers.edit");
@@ -170,7 +157,6 @@ router.post("/:address/block", writeLimit, async (req: Request, res: Response, n
   } catch (e) { next(e); }
 });
 
-// ── DELETE /api/wallets/:address/block ────────────────────────────────────────
 router.delete("/:address/block", writeLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "customers.edit");

@@ -1,17 +1,3 @@
--- Completes the customer-registration pipeline started in patch_v11.
--- Bearth-FE ALREADY calls POST /api/wallets/connect on every wallet connect
--- (src/lib/wallet-register.ts, wired since before this session -- confirmed
--- live in the Bearth-FE codebase, no frontend change needed) but BearthApi-V1
--- has never had a route to receive it, so every call has been silently
--- failing (fire-and-forget with .catch(() => {})). This patch + the matching
--- route/service port makes that already-wired call actually register the
--- customer + wallet in the DB and show up in the Customers page.
---
--- Ported as-is from the legacy BearthDev db, matching V1's customer_wallets
--- schema exactly (already has is_blocked/blocked_reason/blocked_at/
--- is_whitelisted from the RBAC migration). The one genuinely new piece is
--- whitelist_state, which V1 never had.
-
 CREATE TABLE IF NOT EXISTS whitelist_state (
   id integer PRIMARY KEY,
   merkle_root text,
@@ -135,9 +121,6 @@ AS $function$
   WHERE id = 1;
 $function$;
 
--- The actual stub-customer-creation function customer-whitelist.service.ts's
--- autoRegisterAndSync() calls -- this is the piece that makes a wallet
--- connect actually produce a Customer row, not just a customer_wallets row.
 CREATE OR REPLACE FUNCTION public.customer_wallet_auto_register(p_address text, p_source character varying DEFAULT 'wallet_connect'::character varying)
  RETURNS uuid
  LANGUAGE plpgsql
@@ -187,16 +170,6 @@ AS $function$
   LIMIT 1;
 $function$;
 
--- Permission for the admin wallet list/block endpoints -- reuses the
--- customers.* keys from patch_v11 (view/edit) since wallets are just the
--- other half of the same Customers page, not a separate permission concept.
-
--- Extends patch_v11's customers_list() to also return each customer's actual
--- wallet addresses (not just a count) -- the Customers page shows these
--- inline per row now that customers routinely have real linked wallets from
--- the auto-register flow above, instead of requiring a click into each row.
--- Postgres won't let CREATE OR REPLACE change a function's return shape, so
--- the old 6-arg signature must be dropped first.
 DROP FUNCTION IF EXISTS public.customers_list(text, boolean, integer, integer, text, text);
 CREATE OR REPLACE FUNCTION public.customers_list(
   p_search text DEFAULT NULL::text,

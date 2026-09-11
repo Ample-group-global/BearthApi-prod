@@ -3,8 +3,6 @@ import { buildMerkleTree } from "../merkle";
 import { contractSetAllowlistRoot } from "./contract.service";
 import { keepAlive } from "../utils/taskProgress";
 
-// ── Chain sync ────────────────────────────────────────────────────────────────
-
 async function rebuildMerkleAndPush(): Promise<void> {
   const { rows } = await pool.query("SELECT * FROM whitelist_addresses_all()");
   const addresses = rows.map((r: { address: string }) => r.address);
@@ -16,9 +14,6 @@ async function rebuildMerkleAndPush(): Promise<void> {
     await pool.query("SELECT whitelist_state_record_push_attempt($1, true, NULL)", [root]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Durable record, not just a console line nobody's watching -- this is
-    // exactly how the 2026-09-09 desync went unnoticed until a customer's
-    // mint silently reverted. Query v_whitelist_sync_status to check.
     await pool.query(
       "SELECT whitelist_state_record_push_attempt($1, false, $2)",
       [root, message],
@@ -27,16 +22,6 @@ async function rebuildMerkleAndPush(): Promise<void> {
   }
 }
 
-// Merkle rebuild + on-chain push (Wave 1 allowlist root), kept alive past the
-// HTTP response via Vercel's waitUntil() -- previously this ran fully
-// unawaited with no waitUntil, so Vercel could (and, on 2026-09-09, did)
-// freeze/tear down the function mid-push, silently leaving the on-chain root
-// stale with nothing but a console.error nobody was watching. Safe to call
-// before this collection's contract is deployed/configured -- a missing
-// CONTRACT_ADDRESS/signer just makes contractSetAllowlistRoot throw, which is
-// now durably recorded (see rebuildMerkleAndPush's catch) rather than lost.
-// DB registration (the part that actually matters for the Customers page)
-// already completed before this fires.
 export function triggerChainSync(): void {
   keepAlive(
     rebuildMerkleAndPush().catch(err => {
@@ -48,8 +33,6 @@ export function triggerChainSync(): void {
   );
 }
 
-// ── Reconciliation / self-healing ───────────────────────────────────────────
-
 export interface ReconcileResult {
   checkedAt: string;
   wasInSync: boolean;
@@ -59,16 +42,6 @@ export interface ReconcileResult {
   error?: string;
 }
 
-// Compares whitelist_state's intended root against the last-confirmed
-// on-chain root and re-pushes if they've drifted -- the auto-healing half of
-// the 2026-09-09 fix. keepAlive() alone stops NEW drift from being
-// introduced; this actively repairs any drift that still occurs for some
-// other reason (RPC outage, operator wallet out of gas, etc.), instead of
-// leaving real customers blocked until someone notices and runs a manual
-// fix. Safe to call repeatedly/concurrently -- rebuildMerkleAndPush() always
-// recomputes from the live customer_wallets table, and re-pushing the same
-// root twice is a harmless no-op on-chain (just wasted gas), not a
-// correctness risk.
 export async function reconcileWhitelistRoot(): Promise<ReconcileResult> {
   const checkedAt = new Date().toISOString();
   const { rows } = await pool.query("SELECT * FROM v_whitelist_sync_status");
@@ -107,18 +80,11 @@ export async function reconcileWhitelistRoot(): Promise<ReconcileResult> {
   }
 }
 
-// ── Admin-triggered explicit push (Whitelist tab "Push to Chain" button) ───────
-
 export interface PushChainResult {
   root: string;
   txHash: string;
 }
 
-// Unlike rebuildMerkleAndPush() (always recomputes from customer_wallets),
-// this respects whitelist_state.manual_override -- if an admin explicitly set
-// a root via PUT /merkle-root, pushing must send THAT root, not silently
-// recompute over it. Runs synchronously (not keepAlive) since the admin UI
-// wants the txHash back to show in a toast, not a fire-and-forget.
 export async function pushEffectiveRootOnChain(): Promise<PushChainResult> {
   const { rows } = await pool.query(
     "SELECT merkle_root, manual_override FROM whitelist_state WHERE id = 1"
@@ -147,11 +113,6 @@ export async function pushEffectiveRootOnChain(): Promise<PushChainResult> {
   }
 }
 
-// ── Auto-register (wallet_connect path) ───────────────────────────────────────
-
-// Creates a stub customer user for a wallet that just connected for the first time.
-// Always ensures the wallet has a user_id and is_whitelisted = TRUE.
-// Triggers async Merkle rebuild + on-chain push.
 export async function autoRegisterAndSync(
   address: string,
   source: string
@@ -163,9 +124,6 @@ export async function autoRegisterAndSync(
   triggerChainSync();
 }
 
-// ── Strict validation (admin_sale / airdrop paths) ────────────────────────────
-
-// Throws an Error listing any wallets that are not in customer_wallets with a user_id.
 export async function requireRegisteredWallets(wallets: string[]): Promise<void> {
   const unregistered: string[] = [];
   for (const addr of wallets) {

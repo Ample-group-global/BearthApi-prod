@@ -18,8 +18,6 @@ import { deleteObjectsChunked } from "../utils/deleteObjects";
 const router = Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
-// ── GET /api/filebase/buckets — list all buckets ──────────────────────────────
-
 router.get("/buckets", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -31,8 +29,6 @@ router.get("/buckets", async (req, res, next) => {
     res.json({ buckets });
   } catch (e) { next(e); }
 });
-
-// ── GET /api/filebase/buckets/:bucket — exists check ─────────────────────────
 
 router.get("/buckets/:bucket", async (req, res, next) => {
   try {
@@ -52,8 +48,6 @@ router.get("/buckets/:bucket", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /api/filebase/buckets — create bucket ────────────────────────────────
-
 router.post("/buckets", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -64,9 +58,6 @@ router.post("/buckets", async (req, res, next) => {
     res.status(201).json({ name, region: region ?? "us-east-1" });
   } catch (e) { next(e); }
 });
-
-// ── POST /api/filebase/nft-upload/image ──────────────────────────────────────
-// multipart/form-data: file (binary), bucket (string), key (string)
 
 router.post("/nft-upload/image", upload.single("file"), async (req, res, next) => {
   try {
@@ -92,9 +83,6 @@ router.post("/nft-upload/image", upload.single("file"), async (req, res, next) =
     res.status(201).json({ bucket, key, size: file.size, cid: cid || null });
   } catch (e) { next(e); }
 });
-
-// ── POST /api/filebase/nft-upload/metadata ────────────────────────────────────
-// Body: { bucket: string, items: [{ key: string, content: string }] }
 
 router.post("/nft-upload/metadata", async (req, res, next) => {
   try {
@@ -133,8 +121,6 @@ router.post("/nft-upload/metadata", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /api/filebase/objects?bucket=&prefix= — list objects ──────────────────
-
 router.get("/objects", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -142,11 +128,6 @@ router.get("/objects", async (req, res, next) => {
     const prefix = req.query.prefix as string | undefined;
     if (!bucket) { res.status(422).json({ error: "bucket query param is required." }); return; }
 
-    // A single ListObjectsV2 call only ever returns up to 1,000 keys — without
-    // following ContinuationToken this silently truncated any bucket larger
-    // than that (a real 9,999-item collection has well over 1,000 objects
-    // once metadata is included), making bucket counts/contents look wrong
-    // for exactly the large collections this tool exists to manage.
     const s3 = getS3Client();
     const objects: Array<{ key?: string; size?: number; lastModified?: Date; etag?: string }> = [];
     let continuationToken: string | undefined;
@@ -164,13 +145,6 @@ router.get("/objects", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /api/filebase/presigned-urls — batch presigned GET URLs ──────────────
-// Body: { bucket: string, keys: string[] }
-// Signing is local crypto, not an S3 round-trip — cheap even for ~20,000 keys.
-// Lets the browser download each file directly from Filebase (bypassing the
-// Vercel-proxied API entirely for the actual bytes), matching how
-// scripts/download-filebase-bucket.js downloads straight from S3 with no
-// intermediate hop — the same reasoning applied to a browser-side downloader.
 router.post("/presigned-urls", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -196,9 +170,6 @@ router.post("/presigned-urls", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── DELETE /api/filebase/objects — delete a single object ─────────────────────
-// Body: { bucket: string, key: string }
-
 router.delete("/objects", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -210,9 +181,6 @@ router.delete("/objects", async (req, res, next) => {
     res.json({ deleted: true, bucket, key });
   } catch (e) { next(e); }
 });
-
-// ── DELETE /api/filebase/objects/batch — delete multiple objects ───────────────
-// Body: { bucket: string, keys: string[] }
 
 router.delete("/objects/batch", async (req, res, next) => {
   try {

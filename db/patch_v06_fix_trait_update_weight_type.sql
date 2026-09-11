@@ -1,17 +1,3 @@
--- nft_traits.rarity_weight is NUMERIC, but nft_gen_trait_update,
--- nft_gen_trait_create, and nft_gen_traits_list all still declared it as
--- integer (both as a parameter and in RETURNS TABLE). Any manual tier/weight
--- edit through the RarityModal dropdown for a trait with a fractional
--- weight (which is now every trait, since the artist's Excel weights are
--- fractional — 2.78%, 5.56%, 2.99%, etc.) failed outright: either
--- "invalid input syntax for type integer" when the fractional value was
--- passed in, or "structure of query does not match function result type"
--- on the RETURNING clause even for a whole-number update. Confirmed live
--- through the browser: picking "Common" for a "Rare" trait silently failed
--- and the dropdown snapped back to "Rare". Same fix pattern as patch_v05.
-
--- Postgres refuses CREATE OR REPLACE when the return type changes (integer
--- -> numeric here) — DROP first, matching the pattern from patch_v04.
 DROP FUNCTION public.nft_gen_trait_update(p_id uuid, p_name character varying, p_file_path text, p_storage_provider character varying, p_rarity_tier character varying, p_is_active boolean, p_rarity_weight integer);
 DROP FUNCTION public.nft_gen_traits_list(p_layer_id uuid);
 DROP FUNCTION public.nft_gen_trait_create(p_layer_id uuid, p_name character varying, p_file_path text, p_rarity_tier character varying, p_storage_provider character varying, p_rarity_weight integer);
@@ -96,9 +82,6 @@ END;
 $function$
 ;
 
--- nft_gen_traits_list — read path; same output type had the identical
--- mismatch (only rarity_weight int -> numeric changed; logic unchanged from
--- the live function — verified against pg_get_functiondef before editing).
 CREATE OR REPLACE FUNCTION public.nft_gen_traits_list(p_layer_id uuid)
  RETURNS TABLE(id uuid, layer_id uuid, name character varying, file_path text, storage_provider character varying, rarity_weight numeric, rarity_tier character varying, is_active boolean, rarity_pct numeric, created_at timestamp with time zone)
  LANGUAGE plpgsql

@@ -80,9 +80,6 @@ export async function updateLastLogin(userId: string): Promise<void> {
   );
 }
 
-// Increments the failed-attempt counter and locks the account once it
-// reaches MAX_FAILED_LOGIN_ATTEMPTS. Returns the updated count so the
-// caller can decide what to tell the user.
 export async function recordFailedLogin(userId: string): Promise<{ failedLoginCount: number; lockedUntil: Date | null }> {
   const { rows } = await authPool.query(
     `UPDATE users SET
@@ -113,9 +110,6 @@ export async function createResetToken(userId: string, email: string): Promise<s
   return token;
 }
 
-// Verifies the token's signature/expiry AND atomically marks it used —
-// a token can only ever be consumed once. Returns null for an invalid,
-// expired, already-used, or unknown token.
 export async function consumeResetToken(token: string): Promise<{ userId: string; email: string } | null> {
   const payload = decodeHmacToken(token, RESET_SECRET);
   if (!payload) return null;

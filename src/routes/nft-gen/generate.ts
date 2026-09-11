@@ -9,8 +9,6 @@ import { saveTask, getTask, keepAlive } from '../../utils/taskProgress';
 
 const router = Router();
 
-// ── In-memory progress map ────────────────────────────────────────────────────
-
 interface GenerateState {
   status: 'running' | 'done' | 'error';
   phase: string;
@@ -18,18 +16,11 @@ interface GenerateState {
   total: number;
   jobId?: string;
   error?: string;
-  // 1-indexed editions that couldn't find a unique trait combination after
-  // 200 attempts and were generated as a duplicate of an earlier edition —
-  // present only when this actually happened, so the artist can see it
-  // instead of it being silently swallowed.
   duplicateEditions?: number[];
 }
 const generateJobs = new Map<string, GenerateState>();
 
-// Tracks collections currently undergoing generation — blocks duplicate parallel runs
 const generatingCollections = new Set<string>();
-
-// ── POST /  start server-side generation ──────────────────────────────────────
 
 router.post("/", async (req, res, next) => {
   try {
@@ -148,14 +139,6 @@ function resolveConflicts(picks: Record<string, Asset | null>, rules: ConflictRu
   }
 }
 
-// duplicateEditions collects the 1-indexed edition numbers where all 200
-// attempts collided with an already-used trait combination — this used to
-// be silently swallowed (the loop just exits and returns the last, still-
-// duplicate attempt as if it were fine), so an artist with heavily skewed
-// weights or a supply close to their trait set's max unique-combo ceiling
-// could end up with two "different" NFTs sharing identical artwork and
-// never know it. Callers surface this list; nothing about force/block rule
-// matching or the weighted-pick algorithm itself changes.
 function generateAllCombos(
   supply: number, layers: Layer[], weights: Record<string, Record<string, number>>, conflicts: ConflictRule[],
 ): { combos: Record<string, Asset | null>[]; duplicateEditions: number[] } {
@@ -221,16 +204,6 @@ function computeRarity(combos: Record<string, Asset | null>[], layers: Layer[]):
   return scored;
 }
 
-// ── Async cleanup — runs fire-and-forget AFTER generation completes ────────────
-// Only removes jobs that were NEVER exported to Filebase (export_bucket IS
-// NULL). A job that already completed a real Filebase export must never be
-// silently deleted here -- doing so previously wiped the DB's only record of
-// that export (job row + every nft_generated_items row, including their
-// ipfs_image_cid history) even though the actual files were still sitting in
-// the bucket untouched, leaving the sync-status page unable to see them and
-// forcing a needless full re-export. If an old export truly needs clearing,
-// that's what the sync-status page's explicit "Clear & Resync from Filebase"
-// action is for -- not an automatic side effect of regenerating.
 async function cleanOldGenerationData(collectionId: string, newJobId: string): Promise<void> {
   const { rows: oldJobs } = await pool.query<{ id: string }>(
     `SELECT id FROM nft_generation_jobs
@@ -250,15 +223,12 @@ async function cleanOldGenerationData(collectionId: string, newJobId: string): P
   logger.info(`[generate] cleanup: removed ${oldIds.length} old never-exported job(s) for collection ${collectionId}`);
 }
 
-// ── Background worker ─────────────────────────────────────────────────────────
-
 const BATCH_SIZE = 500;
 const BATCH_CONCUR = 2;
 
 async function runGenerate(generateId: string, collectionId: string, editionSize: number, createdBy: string | null) {
   const state = generateJobs.get(generateId)!;
 
-  // 1. Load layers from DB
   const { rows: layerRows } = await pool.query(
     "SELECT * FROM nft_gen_layers_list($1::uuid)", [collectionId]
   );
@@ -268,7 +238,6 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
 
   if (!activeLayers.length) throw new Error("No active layers found for this collection. Go to the Settings tab and click Continue to sync your layers, then try generating again.");
 
-  // 2. Load traits
   const layerIds = activeLayers.map((l: any) => l.id);
   const { rows: traitRows } = await pool.query(
     "SELECT * FROM nft_traits WHERE layer_id = ANY($1::uuid[]) AND is_active = true ORDER BY created_at ASC",
@@ -281,7 +250,6 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
   const conflicts: ConflictRule[] = collRows[0]?.conflict_rules ?? [];
   const weights: Record<string, Record<string, number>> = {};
 
-  // 4. Build layer structure
   const layers: Layer[] = activeLayers.map((l: any) => {
     const layerTraits = traitRows.filter((t: any) => t.layer_id === l.id);
     return {
@@ -300,7 +268,6 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
 
   state.phase = "Generating combinations…";
 
-  // 5. Run combo + rarity algorithm
   const { combos, duplicateEditions } = generateAllCombos(editionSize, layers, weights, conflicts);
   if (duplicateEditions.length) {
     logger.warn(`[generate] ${duplicateEditions.length} edition(s) could not find a unique trait combination after 200 attempts (collection ${collectionId}): ${duplicateEditions.join(", ")}`);
@@ -311,7 +278,6 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
 
   state.phase = "Creating job in database…";
 
-  // 6. Create + start job
   const jobData = await svc.createJob({ collectionId, editionSize, createdBy: createdBy ?? undefined });
   const jobId = jobData?.id ?? jobData;
   if (!jobId) throw new Error("Failed to create generation job in DB.");
@@ -344,7 +310,6 @@ async function runGenerate(generateId: string, collectionId: string, editionSize
     await saveTask(generateId, 'generate', { status: 'running', phase: state.phase, progress: done, total: editionSize, meta: { collectionId } });
   }
 
-  // 8. Complete job, then clean up old jobs (after inserts finish to avoid lock contention)
   await svc.completeJob(String(jobId));
   state.status = "done";
   state.phase = duplicateEditions.length

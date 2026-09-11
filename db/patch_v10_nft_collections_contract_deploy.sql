@@ -1,14 +1,3 @@
--- Per-collection smart contract deployment. Each new collection can now get
--- its own BearthNFT proxy deployed (testnet or mainnet, admin-selectable),
--- instead of every collection sharing the single global CONTRACT_ADDRESS env
--- var. Existing collections (e.g. Bearth V1) are unaffected -- they keep
--- using the shared contract as-is; these columns simply stay NULL for them.
---
--- One deploy per collection: contract_address is left NULL until deployed,
--- then set once and never overwritten by the deploy route (redeploy is
--- refused at the application layer, not enforced here, since a genuine
--- re-deploy after a failed/aborted attempt is a legitimate admin action).
-
 ALTER TABLE nft_collections ADD COLUMN IF NOT EXISTS contract_address text;
 ALTER TABLE nft_collections ADD COLUMN IF NOT EXISTS contract_network text;
 ALTER TABLE nft_collections ADD COLUMN IF NOT EXISTS contract_validator_address text;
@@ -20,8 +9,6 @@ ALTER TABLE nft_collections DROP CONSTRAINT IF EXISTS nft_collections_contract_n
 ALTER TABLE nft_collections ADD CONSTRAINT nft_collections_contract_network_check
   CHECK (contract_network IS NULL OR contract_network IN ('sepolia', 'mainnet'));
 
--- Expose the new columns through the existing collection-detail RPC so
--- ExportPanel can show "already deployed" state without a second endpoint.
 CREATE OR REPLACE FUNCTION public.nft_gen_collection_get(p_id uuid)
  RETURNS json
  LANGUAGE plpgsql

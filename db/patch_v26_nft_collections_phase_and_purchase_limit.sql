@@ -1,9 +1,3 @@
--- nft_collection_config_update and nft_purchase_limit_upsert both used to
--- target the legacy GLOBAL nft_collection_config singleton (id=1) -- the
--- same anti-pattern already removed everywhere else in this codebase
--- (task #25/#54, feedback-no-shared-contract-standing-policy.md). Adding
--- the equivalent columns to nft_collections (per-collection) instead of
--- perpetuating the legacy table.
 ALTER TABLE nft_collections ADD COLUMN IF NOT EXISTS current_phase varchar DEFAULT 'Whitelist';
 ALTER TABLE nft_collections ADD COLUMN IF NOT EXISTS purchase_limit_enabled boolean DEFAULT true;
 ALTER TABLE nft_collections ADD COLUMN IF NOT EXISTS normal_max_per_wallet int DEFAULT 5;

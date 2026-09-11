@@ -4,9 +4,6 @@ import { requirePermission } from "../../adminAuth";
 
 const router = Router();
 
-// GET /api/nft-sell/lookups — sale modes + payment currencies for the Admin
-// Sales tab. Reuses the existing lookup_values table (categories
-// nft_sale_mode / nft_payment_currency) rather than new bespoke tables.
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
@@ -25,11 +22,6 @@ router.get("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// GET /api/nft-sell/lookups/wave-sale-methods — labels for nft_waves.sale_method
-// codes (free_mint, fixed_price, ...), backed by lookup_values so the Waves
-// page can show "Free Mint" instead of the raw DB code. Was previously called
-// by the frontend but never implemented here, so it silently 404'd and the
-// table fell back to printing the raw snake_case code.
 router.get("/wave-sale-methods", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");

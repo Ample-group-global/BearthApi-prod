@@ -1,24 +1,5 @@
--- nft_waves was a single global 7-wave schedule shared by every collection,
--- mirroring the same limitation nft_records had before patch_v07: once
--- multiple collections (Test1/Test2/Test3, and future ones) coexist, a
--- single set of 7 wave rows can't independently track each collection's own
--- schedule/pricing/reveal/treasury state. Splits nft_waves per-collection
--- the same way nft_records already is -- on-chain contract calls are NOT
--- touched by this migration: the deployed contract is a single fixed-supply
--- instance with no per-collection addressing, so it only ever knows "wave
--- number" regardless of which collection's DB row is being mirrored.
-
 ALTER TABLE nft_waves ADD COLUMN IF NOT EXISTS collection_id UUID REFERENCES nft_collections(id);
 
--- Backfill: assign the existing 7 template rows to the first collection with
--- synced nft_records (arbitrary but low-stakes -- no wave has ever had a
--- sale or schedule set, sold_count is 0 for all 7), then clone a fresh copy
--- of those same 7 rows for every OTHER collection that has synced records.
--- The old single-column UNIQUE(wave_number) constraint MUST be dropped
--- before this backfill runs -- while it's still active, cloning wave_number
--- 1..7 for a second collection collides with it, and an untargeted
--- ON CONFLICT DO NOTHING silently swallows every clone insert with no error
--- (caught live: only one collection ended up with wave rows).
 ALTER TABLE nft_waves DROP CONSTRAINT IF EXISTS nft_waves_wave_number_key;
 ALTER TABLE nft_waves DROP CONSTRAINT IF EXISTS uq_nft_waves_collection_wave;
 ALTER TABLE nft_waves ADD CONSTRAINT uq_nft_waves_collection_wave UNIQUE (collection_id, wave_number);
@@ -56,7 +37,6 @@ BEGIN
   END IF;
 END $$;
 
--- v_wave_schedule_status: expose collection_id so the route can scope it.
 DROP VIEW IF EXISTS v_wave_schedule_status;
 CREATE VIEW v_wave_schedule_status AS
 SELECT
@@ -98,7 +78,6 @@ SELECT
 FROM nft_waves w
 ORDER BY wave_number;
 
--- ── nft_wave_get_all: now scoped to one collection ──────────────────────────
 DROP FUNCTION IF EXISTS public.nft_wave_get_all();
 CREATE OR REPLACE FUNCTION public.nft_wave_get_all(p_collection_id uuid)
  RETURNS json
@@ -156,7 +135,6 @@ AS $function$
   WHERE w.collection_id = p_collection_id;
 $function$;
 
--- ── nft_wave_get: now scoped to one collection ──────────────────────────────
 DROP FUNCTION IF EXISTS public.nft_wave_get(integer);
 CREATE OR REPLACE FUNCTION public.nft_wave_get(p_wave_num integer, p_collection_id uuid)
  RETURNS json
@@ -188,7 +166,6 @@ BEGIN
 END;
 $function$;
 
--- ── nft_wave_update_artist_config ────────────────────────────────────────────
 DROP FUNCTION IF EXISTS public.nft_wave_update_artist_config(integer, character varying, character varying, integer, boolean);
 CREATE OR REPLACE FUNCTION public.nft_wave_update_artist_config(p_wave_num integer, p_name character varying, p_wallet character varying, p_royalty_bps integer, p_is_edition boolean, p_collection_id uuid)
  RETURNS void
@@ -200,7 +177,6 @@ AS $function$
   WHERE wave_number = p_wave_num AND collection_id = p_collection_id;
 $function$;
 
--- ── nft_wave_update_flash_sale ───────────────────────────────────────────────
 DROP FUNCTION IF EXISTS public.nft_wave_update_flash_sale(integer, boolean, numeric);
 CREATE OR REPLACE FUNCTION public.nft_wave_update_flash_sale(p_wave_num integer, p_is_flash boolean, p_discount_pct numeric, p_collection_id uuid)
  RETURNS void
@@ -210,7 +186,6 @@ AS $function$
   WHERE wave_number = p_wave_num AND collection_id = p_collection_id;
 $function$;
 
--- ── nft_wave_update_holder_priority ──────────────────────────────────────────
 DROP FUNCTION IF EXISTS public.nft_wave_update_holder_priority(integer, timestamp with time zone, timestamp with time zone);
 CREATE OR REPLACE FUNCTION public.nft_wave_update_holder_priority(p_wave_num integer, p_start timestamp with time zone, p_end timestamp with time zone, p_collection_id uuid)
  RETURNS void
@@ -220,7 +195,6 @@ AS $function$
   WHERE wave_number = p_wave_num AND collection_id = p_collection_id;
 $function$;
 
--- ── nft_wave_update_tier_prices ──────────────────────────────────────────────
 DROP FUNCTION IF EXISTS public.nft_wave_update_tier_prices(integer, jsonb);
 CREATE OR REPLACE FUNCTION public.nft_wave_update_tier_prices(p_wave_num integer, p_tier_prices jsonb, p_collection_id uuid)
  RETURNS void
@@ -229,7 +203,6 @@ AS $function$
   UPDATE nft_waves SET tier_prices = p_tier_prices WHERE wave_number = p_wave_num AND collection_id = p_collection_id;
 $function$;
 
--- ── nft_treasury_nfts_list: scoped to one collection ─────────────────────────
 DROP FUNCTION IF EXISTS public.nft_treasury_nfts_list();
 CREATE OR REPLACE FUNCTION public.nft_treasury_nfts_list(p_collection_id uuid)
  RETURNS json
@@ -255,7 +228,6 @@ AS $function$
   ) t;
 $function$;
 
--- ── nft_holder_snapshot: scoped to one collection ────────────────────────────
 DROP FUNCTION IF EXISTS public.nft_holder_snapshot(integer);
 CREATE OR REPLACE FUNCTION public.nft_holder_snapshot(p_up_to_wave_num integer, p_collection_id uuid)
  RETURNS text[]

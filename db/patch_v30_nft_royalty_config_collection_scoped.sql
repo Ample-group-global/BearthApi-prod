@@ -1,9 +1,3 @@
--- nft_royalty_config was ANOTHER legacy global singleton (id=1) discovered
--- while fixing task #42/#43 -- same anti-pattern as nft_collection_config,
--- but with real synced production data already in it. Converting to a real
--- per-collection table instead of adding a competing column elsewhere
--- (avoids the exact "two sources of truth" drift several of tonight's other
--- bugs came from).
 ALTER TABLE nft_royalty_config ADD COLUMN IF NOT EXISTS collection_id uuid REFERENCES nft_collections(id);
 UPDATE nft_royalty_config SET collection_id = '5cf741b7-c3ac-4c69-9d1e-348fc0fbe09c' WHERE id = 1 AND collection_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS nft_royalty_config_collection_id_key ON nft_royalty_config(collection_id);

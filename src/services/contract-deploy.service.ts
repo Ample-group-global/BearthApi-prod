@@ -7,9 +7,6 @@ import ValidatorArtifact from "../contracts/deploy-abi/CreatorTokenTransferValid
 import RevealCoordinatorArtifact from "../contracts/deploy-abi/BearthRevealCoordinator.json";
 import { invalidateCollectionContractCache, attachListenersForCollection } from "./contract.service";
 
-// Chainlink VRF v2.5 addresses -- mirrors scripts/deployRevealCoordinator.ts
-// in bearth-nft-smartcontract-v1 (single source of truth for these constants
-// would ideally live in one place; kept in sync manually for now).
 const VRF_COORDINATOR: Record<DeployNetwork, string> = {
   sepolia: "0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B",
   mainnet: "0xD7f86b4b8Cae7D942340FF628F82735b7a20893a",
@@ -19,37 +16,22 @@ const VRF_KEY_HASH: Record<DeployNetwork, string> = {
   mainnet: "0x8077df514608a09f83e4e8d300645594e5d7234665448ba83f51a50f842bd3d9",
 };
 
-// OpenSea Seaport conduit — pre-whitelisted in the transfer validator so
-// listings work immediately after deploy. Mirrors bearth-nft-smartcontract-v1/scripts/deploy.ts.
 const OPENSEA_SEAPORT = "0x00000000000000ADc04C56Bf30aC9d3c0aAF14dC";
-const LEVEL_2 = 2; // operator whitelist (only approved marketplaces can transfer)
+const LEVEL_2 = 2;
 const OPERATOR_WHITELIST = 0;
-const MIN_DEPLOY_ETH = "0.05"; // comfortable margin for impl + proxy + validator config
+const MIN_DEPLOY_ETH = "0.05";
 
 export type DeployNetwork = "sepolia" | "mainnet";
 
-// Fibonacci split across the 7 fixed waves (multipliers 1,1,2,3,5,8,13, sum
-// 33) -- the same formula BearthNFT.sol's original hardcoded 9999-collection
-// wave sizes (303/303/606/909/1515/2424/3939) always followed, since
-// 9999/33 = 303. Computed here (off-chain, in this trusted admin-only deploy
-// path) rather than on-chain because BearthNFT.sol has ~0 bytecode headroom
-// under EIP-170's 24KB limit; initialize() just validates+sums whatever's
-// passed in, so there's no way for MAX_SUPPLY to disagree with the real wave
-// allocations regardless of how this array was computed.
 const WAVE_FIB = [1, 1, 2, 3, 5, 8, 13];
 const WAVE_FIB_SUM = 33;
 function fibonacciWaveQtys(totalSupply: number): number[] {
   const qtys = WAVE_FIB.map((f) => Math.floor((totalSupply * f) / WAVE_FIB_SUM));
   const remainder = totalSupply - qtys.reduce((a, b) => a + b, 0);
-  qtys[6] += remainder; // any rounding remainder goes to the largest (final) wave
+  qtys[6] += remainder;
   return qtys;
 }
 
-// Signer keys never travel through the browser or an API request body — they
-// live only in these server-side env vars, one deployer wallet per network.
-// That same wallet's address is used as admin/operations/treasury (matches
-// how every deploy has actually been run so far); only the emergency wallet
-// must be a separate address, enforced below for mainnet.
 function getNetworkConfig(network: DeployNetwork) {
   const prefix = network === "sepolia" ? "DEPLOY_SEPOLIA" : "DEPLOY_MAINNET";
   const rpcUrl = process.env[`${prefix}_RPC_URL`];
@@ -81,8 +63,6 @@ export async function deployCollectionContract(params: {
   if (!collection.symbol?.trim()) throw new Error("Set a Token Symbol on this collection before deploying a contract.");
   if (!blindBoxUri?.trim()) throw new Error("Blind box metadata URI is required.");
   const totalSupply = Number(collection.supply);
-  // < 33 (the Fibonacci multiplier sum) would floor the smallest wave(s) to 0,
-  // which initialize() rejects (InvalidQuantity) -- every wave must get >= 1.
   if (!Number.isInteger(totalSupply) || totalSupply < 33) {
     throw new Error("Collection supply must be a whole number of at least 33 before deploying a contract (so every wave gets at least 1 token).");
   }
@@ -93,14 +73,6 @@ export async function deployCollectionContract(params: {
   const signer = new ethers.Wallet(privateKey, provider);
   const adminWallet = signer.address;
   const treasury = signer.address;
-  // operationsWallet is deliberately NOT signer.address: BearthApi-V1's
-  // day-to-day write operations (setWaveSchedule, treasuryClose, revealWave,
-  // pause, etc. -- everything in nft-sell/waves.ts) sign with
-  // CONTRACT_PRIVATE_KEY/FIXED_PRIVATE_KEY, a DIFFERENT wallet from this
-  // deploy-time signer. Granting OPERATOR_ROLE to the deployer instead of
-  // this wallet left every freshly-deployed collection-wise contract
-  // unusable by the actual backend signer (confirmed 2026-09-10: "Caller
-  // does not have the required role" on setWaveSchedule for Bearth Test1).
   const operationsPrivateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
   if (!operationsPrivateKey) {
     throw new Error("CONTRACT_PRIVATE_KEY (or FIXED_PRIVATE_KEY) is not configured on the server -- required so the deployed contract's OPERATOR_ROLE matches the wallet BearthApi-V1 actually signs wave-management transactions with.");
@@ -132,21 +104,18 @@ export async function deployCollectionContract(params: {
 
   logger.info(`[contract-deploy] Deploying contract for "${collection.name}" on ${network} — deployer ${signer.address}, supply ${totalSupply}, waves ${JSON.stringify(waveQtys)}`);
 
-  // ── 1. Deploy CreatorTokenTransferValidator ──────────────────────────────
   const ValidatorFactory = new ethers.ContractFactory(ValidatorArtifact.abi, ValidatorArtifact.bytecode, signer);
   const validator = await ValidatorFactory.deploy(signer.address);
   await validator.waitForDeployment();
   const validatorAddress = await validator.getAddress();
   logger.info(`[contract-deploy] Validator deployed: ${validatorAddress}`);
 
-  // ── 2. Deploy BearthNFT implementation ───────────────────────────────────
   const BearthNFTFactory = new ethers.ContractFactory(BearthNFTArtifact.abi, BearthNFTArtifact.bytecode, signer);
   const impl = await BearthNFTFactory.deploy();
   await impl.waitForDeployment();
   const implAddress = await impl.getAddress();
   logger.info(`[contract-deploy] Implementation deployed: ${implAddress}`);
 
-  // ── 3. Deploy proxy, calling initialize() in the same transaction ───────
   const initData = BearthNFTFactory.interface.encodeFunctionData("initialize", [
     collection.name,
     collection.symbol,
@@ -165,27 +134,16 @@ export async function deployCollectionContract(params: {
   const proxyAddress = await proxy.getAddress();
   logger.info(`[contract-deploy] Proxy deployed: ${proxyAddress}`);
 
-  // ── 3b. Grant REVEAL_ROLE to the operations wallet ───────────────────────
-  // initialize() only grants OPERATOR_ROLE to operationsWallet -- reveal.service.ts
-  // signs revealWave() directly from this same wallet (no separate VRF
-  // coordinator contract exists yet), so it also needs REVEAL_ROLE or every
-  // reveal reverts with AccessControlUnauthorizedAccount.
   const proxyContract = new ethers.Contract(proxyAddress, BearthNFTArtifact.abi, signer);
   const revealRole = await proxyContract.REVEAL_ROLE();
   await (await proxyContract.grantRole(revealRole, operationsWallet)).wait();
   logger.info(`[contract-deploy] REVEAL_ROLE granted to operations wallet ${operationsWallet}`);
 
-  // ── 4. Configure transfer validator ──────────────────────────────────────
   const validatorContract = new ethers.Contract(validatorAddress, ValidatorArtifact.abi, signer);
   await (await validatorContract.setTransferSecurityLevelOfCollection(proxyAddress, LEVEL_2)).wait();
   await (await validatorContract.addAccountsToWhitelist(proxyAddress, OPERATOR_WHITELIST, [OPENSEA_SEAPORT])).wait();
   logger.info(`[contract-deploy] Validator configured (LEVEL_2, OpenSea Seaport whitelisted)`);
 
-  // ── 5. Deploy + wire BearthRevealCoordinator (Chainlink VRF v2.5) ───────
-  // Without this, revealWave() hard-reverts forever on mainnet (WaveRandomnessNotSet
-  // -- see BearthNFT.sol's block.chainid == 1 guard). Deployed on every network,
-  // not just mainnet, so testnet exercises the exact same reveal path production
-  // will use, instead of the weaker block.prevrandao fallback diverging from it.
   logger.info(`[contract-deploy] Deploying BearthRevealCoordinator (VRF)...`);
   const vrfCoordinatorAddr = VRF_COORDINATOR[network];
   const vrfKeyHash = VRF_KEY_HASH[network];
@@ -214,32 +172,11 @@ export async function deployCollectionContract(params: {
   await (await proxyContract.setRevealCoordinator(coordinatorAddress)).wait();
   logger.info(`[contract-deploy] Coordinator wired: REVEAL_ROLE granted + setRevealCoordinator() called`);
 
-  // ── 5b. Propose coordinator ownership transfer away from the deploy wallet ──
-  // VRFConsumerBaseV2Plus inherits Chainlink's ConfirmedOwner, which makes
-  // the DEPLOYING wallet the coordinator's owner() -- completely separate
-  // from this project's AccessControl roles. That owner can call
-  // setCoordinator(attackerContract) and have it call rawFulfillRandomWords()
-  // with an arbitrary value, fully rigging the reveal shuffle (found 2026-09-11).
-  // transferOwnership() only PROPOSES the new owner -- acceptOwnership() must
-  // still be called by adminGovernanceWallet itself (its private key is never
-  // held by this server, by design -- see the 5-wallet separation-of-duties
-  // model). Until that acceptance happens, the deploy wallet remains the real
-  // owner and this vulnerability is NOT closed -- just queued.
-  // coordinator is untyped BaseContract (ContractFactory.deploy() return type
-  // doesn't carry its ABI's methods) -- transferOwnership exists at runtime
-  // via the ABI, TS just can't see it statically.
   await (await (coordinator as any).transferOwnership(adminGovernanceWallet)).wait();
   logger.warn(`[contract-deploy] Coordinator ownership transfer PROPOSED to ${adminGovernanceWallet} -- ` +
     `still owned by the deploy wallet until that wallet calls acceptOwnership() on ${coordinatorAddress} directly (e.g. via Etherscan). ` +
     (network === "mainnet" ? "REQUIRED before mainnet reveal is safe." : "Recommended before treating this deploy as production-representative."));
 
-  // ── 6. Grant governance-only roles to the Admin/Governance wallet ───────
-  // initialize() never grants UPGRADER_ROLE or TREASURY_TIMELOCK_ROLE to
-  // anyone (confirmed by reading BearthNFT.sol directly) -- left unassigned,
-  // NOBODY (including the team) can upgrade the contract or change the
-  // treasury wallet. Wired here to the dedicated Admin/Governance wallet so
-  // deployer/operations keys can't exercise these, but a real Bearth-team
-  // key still can.
   const upgraderRole = await proxyContract.UPGRADER_ROLE();
   const treasuryTimelockRole = await proxyContract.TREASURY_TIMELOCK_ROLE();
   await (await proxyContract.grantRole(upgraderRole, adminGovernanceWallet)).wait();
@@ -256,17 +193,8 @@ export async function deployCollectionContract(params: {
      coordinatorAddress, vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null],
   );
 
-  // This function refuses to run if contract_address is already set -- but a
-  // reset flow that nulls contract_address first (as used repeatedly this
-  // session for redeploy-and-retest cycles) then calls this again for the
-  // SAME collectionId, which is exactly how the stale-cache bug happened
-  // 2026-09-10 ("Push Schedule to Chain" landed on the old contract).
   invalidateCollectionContractCache(collectionId);
 
-  // Same class of gap as the cache above (task #30): event listener
-  // registration used to run ONLY at server boot, so a fresh deploy's real
-  // customer mints/reveals/etc could never sync until someone manually
-  // restarted the whole server. Attach immediately instead of waiting.
   await attachListenersForCollection(collectionId);
 
   return {

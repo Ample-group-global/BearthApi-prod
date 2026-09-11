@@ -173,7 +173,6 @@ export async function bulkCreateNft(records: Array<{
   deliveryStatusId?: string | null; deliveryStatusCode?: string | null;
   notes?: string | null;
 }>) {
-  // Pre-fetch lookup tables once
   const [stagesRes, typesRes, statusRes] = await Promise.all([
     pool.query("SELECT id, code, label AS name FROM lookup_values WHERE category = 'nft_stage'"),
     pool.query("SELECT id, code, label AS name FROM lookup_values WHERE category = 'nft_type'"),

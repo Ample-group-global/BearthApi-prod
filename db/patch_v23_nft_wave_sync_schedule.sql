@@ -1,8 +1,3 @@
--- nft_wave_sync_schedule was called from contract.service.ts's
--- WaveScheduleUpdated event handler but was never actually created --
--- every real setWaveSchedule() call has been silently failing this sync
--- step since it was first wired up (task #27/#49, confirmed 2026-09-11
--- via pg_proc lookup returning no rows).
 CREATE OR REPLACE FUNCTION nft_wave_sync_schedule(
   p_wave_number int,
   p_start timestamptz,

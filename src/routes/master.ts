@@ -5,10 +5,6 @@ import { getBlindboxImageUrl } from "../services/nft-gen.service";
 
 const router = Router();
 
-// GET /api/master — reference/lookup data for the NFT List page's filter
-// dropdowns (stage, type, delivery status). Backed by lookup_values, the
-// same generic reference table nfts.ts already reads for delivery_status
-// — nothing here is a new data source, just exposing what already exists.
 router.get("/", requireAdmin, async (req, res, next) => {
   try {
     const [{ rows }, { rows: collectionRows }, blindBoxImageUrl] = await Promise.all([
@@ -17,9 +13,6 @@ router.get("/", requireAdmin, async (req, res, next) => {
          WHERE category IN ('nft_stage', 'nft_type', 'delivery_status') AND is_active = true
          ORDER BY category, sort_order, label`,
       ),
-      // Only collections actually synced into nft_records — a collection
-      // that only exists in nft_generation_jobs (never synced) has nothing
-      // to show under this filter yet.
       pool.query<{ id: string; name: string }>(
         `SELECT DISTINCT nc.id, nc.name FROM nft_collections nc
          JOIN nft_records nr ON nr.collection_id = nc.id

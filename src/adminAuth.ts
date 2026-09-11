@@ -66,10 +66,6 @@ export function requireRole(req: Request): { role: AdminRole; userId: string } {
   if (!token) throw new HttpError(401, "Unauthorized");
   const result = verifyToken(token);
   if (!result) throw new HttpError(401, "Invalid or expired token");
-  // loadUserContext runs ahead of every route (see index.ts) and only
-  // attaches userCtx when the user still exists and is active in the DB —
-  // a missing userCtx here means the account was deactivated/deleted
-  // since the token was issued.
   if (!req.userCtx || req.userCtx.userId !== result.userId) {
     throw new HttpError(401, "Account not found or inactive");
   }

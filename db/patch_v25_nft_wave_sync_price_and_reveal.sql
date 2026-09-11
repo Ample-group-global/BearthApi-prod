@@ -1,8 +1,3 @@
--- Two more of the eight missing SQL sync functions (task #54). Also fixes
--- the nft_wave_sync_reveal call site (contract.service.ts) which was
--- missing collection_id entirely -- same hard-rule gap already fixed for
--- the other wave-scoped sync functions on 2026-09-11.
-
 CREATE OR REPLACE FUNCTION nft_wave_sync_price(
   p_wave_number int,
   p_price_eth numeric,

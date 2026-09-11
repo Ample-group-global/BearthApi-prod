@@ -1,22 +1,3 @@
--- Ports the legacy "Customers" admin feature (from the pre-V1 BearthDev/
--- BearthAdmin/BearthApi, which had a broader Sales/Products/OpenSea admin
--- panel) forward into V1 -- scoped down to Customers + Wallets ONLY, per
--- explicit instruction. The `orders`/`reconciliation_entries` joins present
--- in the legacy customers_list()/customers_get() are intentionally dropped;
--- those are Sales-module tables outside V1's NFT-focused scope.
---
--- Customers are not a standalone table -- they are `users` rows with
--- role_id pointing at the 'customer' role, same design as legacy. V1's
--- `users` and `customer_wallets` tables already carry every column these
--- functions touch (confirmed directly against the schema before writing
--- this), so no ALTER TABLE is needed here, only the missing sequence + the
--- functions themselves.
---
--- Going forward, real customers are expected to originate from Bearth-FE's
--- wallet-connect/mint flow (auto-registering a customer_wallets row), not
--- from admin-created rows via customers_create() -- that function is kept
--- for admin flexibility (matches the legacy page), not as the primary path.
-
 CREATE SEQUENCE IF NOT EXISTS seq_user_cu START 1;
 
 CREATE OR REPLACE FUNCTION public.customers_list(
@@ -316,19 +297,10 @@ BEGIN
 END;
 $function$;
 
--- Add the Customers menu entry, matching the legacy row's label/href/icon
--- but under a fresh id (V1's menus table already has its own ids -- reusing
--- the legacy uuid would be an arbitrary, meaningless coincidence, not a
--- meaningful link between the two separate databases). Grouped under
--- NFT Management (V1 has no separate Sales/Customer-Management module the
--- way the legacy DB did), slotted between NFT Lists (110) and NFT Waves (120).
 INSERT INTO menus (label, href, icon, module, sort_order, is_active, module_label)
 SELECT 'Customers', '/customers', 'users', 'nft_manage', 115, true, 'NFT Management'
 WHERE NOT EXISTS (SELECT 1 FROM menus WHERE href = '/customers');
 
--- Permissions, matching the legacy route's requirePermission() calls exactly
--- (customers.view/create/edit/delete), granted to the same roles that
--- already manage NFT operations (nft_gen.* grantees).
 INSERT INTO permissions (key, label, module, sort_order)
 SELECT 'customers.view', 'View Customers', 'customers', 95
 WHERE NOT EXISTS (SELECT 1 FROM permissions WHERE key = 'customers.view');
@@ -352,8 +324,6 @@ WHERE r.code IN ('admin', 'operation', 'technical_team')
     SELECT 1 FROM role_permissions rp WHERE rp.role_id = r.id AND rp.permission_id = p.id
   );
 
--- Sidebar visibility -- technical_team is the only role currently linked to
--- NFT Lists/Waves (sort_order 0 each); mirror that exactly for Customers.
 INSERT INTO role_menus (role_id, menu_id, sort_order)
 SELECT r.id, m.id, 0
 FROM roles r

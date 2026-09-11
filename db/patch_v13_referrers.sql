@@ -1,12 +1,3 @@
--- Referrer picker for the Customers form -- confirmed with the user this is
--- a broad concept, not a separate "referrer accounts" list: a customer can
--- refer another customer, an AMG team member (admin/operation/technical_team/
--- sales_team) can refer anyone, or a dedicated external referrer
--- (ext_referrer role) can refer anyone. referrers_list() already reflects
--- exactly this eligibility set -- ported unchanged from legacy. referrers_
--- create() covers onboarding a brand-new external referral partner who has
--- no other account yet (gets an EX### code under the ext_referrer role).
-
 CREATE SEQUENCE IF NOT EXISTS seq_user_ex START 1;
 
 CREATE OR REPLACE FUNCTION public.referrers_list(p_search text DEFAULT NULL::text)

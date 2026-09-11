@@ -10,7 +10,6 @@ export interface UserContext {
 }
 
 export async function getUserContext(userId: string): Promise<UserContext | null> {
-  // Get user + role
   const { rows: userRows } = await authPool.query(
     `SELECT u.id, r.code AS role_code, r.name AS role_name
      FROM users u LEFT JOIN roles r ON u.role_id = r.id
@@ -20,7 +19,6 @@ export async function getUserContext(userId: string): Promise<UserContext | null
   if (!userRows[0]) return null;
   const user = userRows[0] as { id: string; role_code: string; role_name: string };
 
-  // Get permissions: role perms + overrides
   const { rows: permRows } = await authPool.query(
     `SELECT DISTINCT p.key
      FROM permissions p
@@ -42,7 +40,6 @@ export async function getUserContext(userId: string): Promise<UserContext | null
   );
   const permissions = permRows.map((r: { key: string }) => r.key);
 
-  // Get menus for this role
   const { rows: menuRows } = await authPool.query(
     `SELECT m.label, m.href, m.icon, m.module, m.module_label, rm.sort_order
      FROM menus m

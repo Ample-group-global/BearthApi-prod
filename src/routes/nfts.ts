@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import { requireAdmin, requireRole } from "../adminAuth";
 import * as nftService from "../services/nft.service";
 import pool from "../pool";
@@ -6,7 +6,6 @@ import { logNftActivity } from "../services/nft-log.service";
 
 const router = Router();
 
-// GET /api/nfts list with filters, pagination, sorting
 router.get("/", async (req, res, next) => {
   try {
     const {
@@ -43,7 +42,6 @@ router.get("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/nfts create single NFT record
 router.post("/", requireAdmin, async (req, res, next) => {
   try {
     const { serialNumber, stageId, nftTypeId, deliveryStatusId, notes } = req.body ?? {};
@@ -55,7 +53,6 @@ router.post("/", requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/nfts/bulk bulk create
 router.post("/bulk", requireAdmin, async (req, res, next) => {
   try {
     const { records } = req.body ?? {};
@@ -67,7 +64,6 @@ router.post("/bulk", requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// GET /api/nfts/:id
 router.get("/:id", async (req, res, next) => {
   try {
     const record = await nftService.getNft(req.params.id);
@@ -76,7 +72,6 @@ router.get("/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// PUT /api/nfts/:id update
 router.put("/:id", requireAdmin, async (req, res, next) => {
   try {
     const { stageId, nftTypeId, deliveryStatusId, notes, waveId, priceEth, clearPriceEth } = req.body ?? {};
@@ -88,7 +83,6 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/nfts/trait-stats batch rarity % for a set of traits
 router.post("/trait-stats", async (req, res, next) => {
   try {
     const { traits } = req.body ?? {};
@@ -114,7 +108,6 @@ router.post("/trait-stats", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/nfts/:id/confirm-delivery
 router.post("/:id/confirm-delivery", requireAdmin, async (req, res, next) => {
   try {
     const { deliveryStatusId } = req.body ?? {};
@@ -126,8 +119,6 @@ router.post("/:id/confirm-delivery", requireAdmin, async (req, res, next) => {
 });
 
 
-// PUT /api/nfts/:id/sbt — toggle per-token SBT (soulbound) status on-chain
-// Body: { enabled: boolean }  — token_id is resolved from the DB record UUID
 router.put("/:id/sbt", requireAdmin, async (req, res, next) => {
   try {
     const { enabled } = req.body as { enabled: boolean };
@@ -151,14 +142,10 @@ router.put("/:id/sbt", requireAdmin, async (req, res, next) => {
       txHash: receipt.hash,
       details: { enabled },
     });
-    // DB update is handled automatically via TokenSBTChanged event listener
     res.json({ ok: true, txHash: receipt.hash });
   } catch (err) { next(err); }
 });
 
-// POST /api/nfts/bulk-transfer — transfer treasury-held tokens to a recipient wallet
-// Body: { tokenIds: number[], recipient: string, collectionId: string }
-// Max 50 tokens per call; treasury wallet (FIXED_PRIVATE_KEY) must own all tokens
 const BULK_TRANSFER_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
   try {
@@ -173,10 +160,6 @@ router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
     if (!collectionId || !BULK_TRANSFER_UUID_RE.test(collectionId))
       return res.status(400).json({ error: "collectionId is required" });
 
-    // Verify all tokens are treasury-held (delivery_status = 'treasury_wallet')
-    // AND belong to this collection -- without the collection_id filter, two
-    // collections sharing the same numeric token_id (each contract numbers
-    // its own tokens from 1) would match both rows here.
     const { rows: statusRows } = await pool.query<{ token_id: number; code: string }>(
       `SELECT nr.token_id, lv.code
          FROM nft_records nr
@@ -214,18 +197,6 @@ router.post("/bulk-transfer", requireAdmin, async (req, res, next) => {
   }
 });
 
-// POST /api/nfts/testnet-reset — per-collection DB reset for testnet wave
-// testing only. Blocked on mainnet. Requires collectionId — resets ONLY that
-// collection's nft_records/nft_waves/nft_wave_pool/nft_activity_log.
-//
-// customer_wallets and nft_collection_config are DELIBERATELY left untouched:
-// customer_wallets has no collection_id column at all (is_whitelisted,
-// wallet_total_minted, wl_claimed, purchase_limit_override are stored as if
-// wallet identity were collection-agnostic, which it isn't -- a real gap,
-// tracked separately, not safe to guess a scoping for here). nft_collection_config
-// is the legacy global singleton (id=1) superseded by nft_collections --
-// resetting it as a side effect of one collection's reset would itself
-// violate the "one collection can't affect another" rule in the other direction.
 router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
   try {
     const network = process.env.NEXT_PUBLIC_CONTRACT_NET ?? process.env.CONTRACT_NET ?? "";
@@ -238,7 +209,6 @@ router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
       res.status(400).json({ error: "collectionId is required for testnet-reset." }); return;
     }
 
-    // Clear all mint/transfer/reveal state from NFT records (rows are permanent — never deleted)
     await pool.query(`
       UPDATE nft_records SET
         wave_id              = NULL,
@@ -267,7 +237,6 @@ router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
       WHERE collection_id = $1
     `, [collectionId]);
 
-    // Reset this collection's 7 waves to pre-scheduling state
     await pool.query(`
       UPDATE nft_waves SET
         status                = 'upcoming',
@@ -298,9 +267,6 @@ router.post("/testnet-reset", requireAdmin, async (req, res, next) => {
       WHERE collection_id = $1
     `, [collectionId]);
 
-    // nft_wave_pool/nft_activity_log have no collection_id column -- scope
-    // via nft_record_id's own collection instead of the TRUNCATE this used to
-    // be (TRUNCATE has no WHERE clause and would still wipe every collection).
     await pool.query(`
       DELETE FROM nft_wave_pool
       WHERE nft_record_id IN (SELECT id FROM nft_records WHERE collection_id = $1)

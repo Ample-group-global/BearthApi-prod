@@ -21,11 +21,6 @@ function getProvider() {
   return new ethers.JsonRpcProvider(RPC_URL);
 }
 
-/**
- * Scan ownerOf(1..totalSupply) to find all token IDs owned by addr.
- * Handles tokens beyond totalSupply (ERC721A burn counter discrepancy)
- * by checking up to totalSupply + extra buffer.
- */
 async function getOwnedTokenIds(addr: string, contractAddress: string): Promise<number[]> {
   if (!contractAddress) return [];
   const provider = getProvider();
@@ -38,7 +33,6 @@ async function getOwnedTokenIds(addr: string, contractAddress: string): Promise<
 
   if (Number(balance) === 0) return [];
 
-  // Scan up to supply + 20 buffer (burned tokens reduce supply but IDs still exist)
   const scanLimit = Number(supply) + 20;
   const checks = Array.from({ length: scanLimit }, (_, i) =>
     nft.ownerOf(i + 1)
@@ -49,12 +43,6 @@ async function getOwnedTokenIds(addr: string, contractAddress: string): Promise<
   return results.filter((id): id is number => id !== null);
 }
 
-/**
- * GET /api/nfts/owned?address=0x...&collection=genesis|upgrade
- *
- * Returns token IDs currently owned by the given wallet address.
- * Reads directly from the blockchain for accuracy — no DB dependency.
- */
 router.get("/owned", async (req, res, next) => {
   const { address, collection = "genesis" } = req.query;
 
@@ -80,11 +68,6 @@ router.get("/owned", async (req, res, next) => {
   }
 });
 
-/**
- * POST /api/nft-chain/emergency-transfer
- * Force-transfer a specific NFT token. Requires EMERGENCY_ROLE on the contract.
- * Signs via server FIXED_PRIVATE_KEY — no browser wallet needed.
- */
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 router.post("/emergency-transfer", requireAdmin, async (req, res, next) => {
@@ -125,15 +108,6 @@ router.post("/emergency-transfer", requireAdmin, async (req, res, next) => {
   }
 });
 
-/**
- * GET /api/nft-chain/metadata/:tokenId?collectionId=...
- * Read tokenURI directly from the live contract, then fetch the IPFS JSON.
- * Use to detect DB ↔ chain desync without a browser wallet. Requires
- * collectionId -- without it this always read the legacy global
- * CONTRACT_ADDRESS regardless of which collection the caller had selected,
- * so verifying a token while e.g. "Bearth Test2" was selected could
- * silently check a completely different collection's contract.
- */
 router.get("/metadata/:tokenId", requireAdmin, async (req, res, next) => {
   const tokenId = Number(req.params.tokenId);
   if (!Number.isInteger(tokenId) || tokenId < 1) {
@@ -161,7 +135,7 @@ router.get("/metadata/:tokenId", requireAdmin, async (req, res, next) => {
     try {
       const ipfsRes = await fetch(gatewayUrl, { signal: AbortSignal.timeout(10_000) });
       if (ipfsRes.ok) metadata = await ipfsRes.json();
-    } catch { /* metadata stays null — URI exists but IPFS unavailable */ }
+    } catch { }
     res.json({ tokenId, uri, gatewayUrl, metadata });
   } catch (e) {
     next(e);

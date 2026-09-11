@@ -89,7 +89,6 @@ app.get("/api/docs", (_req, res) => {
 </html>`);
 });
 
-// V1 routes: Login/Auth + RBAC + NFT Studio + Contract Ops + NFT Lists + Waves
 app.use("/api/auth", authRouter);
 app.use("/api/admin/roles", adminRolesRouter);
 app.use("/api/admin/permissions", adminPermissionsRouter);
@@ -98,15 +97,6 @@ app.use("/api/admin/users", adminUsersRouter);
 app.use("/api/admin/overview", adminOverviewRouter);
 app.use("/api/nft-gen", nftGenRouter);
 app.use("/api/filebase", filebaseRouter);
-// Mounted at /api/nft-sell/waves, not /api/nft-sell -- every route inside
-// nftSellWavesRouter (/, /:num, /schedule-status, /:num/reveal, etc.) is
-// defined relative to the router root expecting that extra "waves" segment,
-// matching how the Admin frontend actually calls it (e.g. fetch("/api/nft-sell/waves")).
-// Mounting one segment short silently misrouted every plain "/waves" call
-// into the "/:num" handler with num="waves", which fails its 1-7 range
-// check and returns "Wave number must be 1-7" for what should have been
-// the full wave list -- this is why the NFT Waves admin page showed
-// "Total Waves: 0" with an empty table despite waves existing in the DB.
 app.use("/api/nft-sell/waves", nftSellWavesRouter);
 app.use("/api/nft-sell/lookups", nftSellLookupsRouter);
 app.use("/api/nft-sell/collection", nftSellCollectionRouter);

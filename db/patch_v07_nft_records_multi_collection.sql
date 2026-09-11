@@ -1,15 +1,5 @@
--- nft_records was scoped to hold exactly one collection's data at a time:
--- serial_number ("#1".."#9999") was globally UNIQUE, but every collection
--- independently numbers its own editions "#1".."#N", so a second collection
--- synced into nft_records would collide with the first's serial numbers.
--- This let Test1/Test2/Test3 (and future collections) coexist in the same
--- table, distinguished by collection_id, instead of nft_records being
--- limited to one collection at a time.
-
 ALTER TABLE nft_records ADD COLUMN IF NOT EXISTS collection_id UUID REFERENCES nft_collections(id);
 
--- Backfill any pre-existing rows (synced before this migration existed) by
--- tracing generated_item_id -> nft_generated_items.job_id -> nft_generation_jobs.collection_id.
 UPDATE nft_records nr
 SET collection_id = gj.collection_id
 FROM nft_generated_items gi
@@ -21,11 +11,6 @@ ALTER TABLE nft_records DROP CONSTRAINT IF EXISTS nft_records_serial_number_key;
 ALTER TABLE nft_records DROP CONSTRAINT IF EXISTS uq_nft_records_collection_serial;
 ALTER TABLE nft_records ADD CONSTRAINT uq_nft_records_collection_serial UNIQUE (collection_id, serial_number);
 
--- v_nft_records: expose collection_name for admin UI display/filtering.
--- DROP + CREATE (not CREATE OR REPLACE) because nr.* now includes
--- collection_id, which shifts the position of every column after it —
--- Postgres refuses CREATE OR REPLACE VIEW when existing column
--- names/positions change.
 DROP VIEW IF EXISTS v_nft_records;
 CREATE VIEW v_nft_records AS
 SELECT

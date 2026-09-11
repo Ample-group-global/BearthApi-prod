@@ -70,7 +70,6 @@ router.get("/collections/:id/prefixes", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /cleanup-orphaned-prefix — delete a session-prefix folder, but ──────
 router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
@@ -107,7 +106,6 @@ router.post("/cleanup-orphaned-prefix", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /symbol-check — does a layer upload for this Token Symbol already ───
 router.get("/symbol-check", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -125,7 +123,6 @@ router.get("/symbol-check", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /upload — receive layer PNGs from BearthAdmin, save to Filebase S3 ──
 router.post("/upload", upload.array("files"), async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
@@ -164,7 +161,6 @@ router.post("/upload", upload.array("files"), async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /upload/finalize — clean up a layer's stale leftovers ──────────────
 router.post("/upload/finalize", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.manage_layers");
@@ -237,8 +233,6 @@ router.delete("/:id", async (req, res, next) => {
     res.json(result);
   } catch (e) { next(e); }
 });
-
-// ── Traits nested under layer ────────────────────────────────────────────────
 
 router.get("/:id/traits", async (req, res, next) => {
   try {

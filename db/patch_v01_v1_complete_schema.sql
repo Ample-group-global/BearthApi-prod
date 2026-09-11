@@ -1,14 +1,4 @@
--- ============================================================
--- BearthDev-V1 — Complete schema + seed
--- Scope: Login / Forgot Password / NFT Studio / RBAC only
--- 14 tables, all indexes, all nft_gen_* functions, seed data
--- ============================================================
-
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
--- ============================================================
--- TABLES
--- ============================================================
 
 CREATE TABLE IF NOT EXISTS roles (
   id          UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -194,10 +184,6 @@ CREATE TABLE IF NOT EXISTS nft_upload_batches (
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- ============================================================
--- INDEXES
--- ============================================================
-
 CREATE INDEX IF NOT EXISTS idx_nft_gen_items_job_id       ON nft_generated_items  (job_id);
 CREATE INDEX IF NOT EXISTS idx_nft_gen_jobs_collection_id  ON nft_generation_jobs  (collection_id);
 CREATE INDEX IF NOT EXISTS idx_nft_gen_jobs_status         ON nft_generation_jobs  (status);
@@ -208,10 +194,6 @@ CREATE INDEX IF NOT EXISTS idx_nft_layers_sort_order       ON nft_layers        
 CREATE INDEX IF NOT EXISTS idx_nft_traits_active           ON nft_traits            (layer_id, is_active);
 CREATE INDEX IF NOT EXISTS idx_nft_traits_layer_id         ON nft_traits            (layer_id);
 CREATE INDEX IF NOT EXISTS idx_nft_upload_batches_job_id   ON nft_upload_batches    (job_id);
-
--- ============================================================
--- FUNCTIONS
--- ============================================================
 
 CREATE OR REPLACE FUNCTION public.nft_gen_collection_create(p_name character varying, p_description text DEFAULT NULL::text, p_symbol character varying DEFAULT NULL::character varying, p_network character varying DEFAULT 'eth'::character varying, p_royalty_bps integer DEFAULT 0, p_creator_wallet text DEFAULT NULL::text, p_format_width integer DEFAULT 512, p_format_height integer DEFAULT 512, p_smoothing boolean DEFAULT false, p_bg_generate boolean DEFAULT false, p_bg_static_color character varying DEFAULT NULL::character varying, p_shuffle_output boolean DEFAULT true, p_dna_tolerance integer DEFAULT 10000, p_created_by uuid DEFAULT NULL::uuid, p_supply integer DEFAULT 100, p_name_format text DEFAULT '#{{id}}'::text, p_format_type text DEFAULT 'png'::text, p_conflict_rules jsonb DEFAULT '[]'::jsonb)
  RETURNS TABLE(id uuid, name character varying, status character varying, created_at timestamp with time zone)
@@ -1158,11 +1140,6 @@ AS $function$
 $function$
 ;
 
--- ============================================================
--- SEED DATA
--- ============================================================
-
--- Roles (same UUIDs as live BearthDev — admin home_url changed to /dashboard for V1)
 INSERT INTO roles (id, code, name, description, is_active, home_url) VALUES
   ('3d658c1b-2930-4873-a4d1-119d4970ea5c', 'admin',          'Bearth Admin',          'Full access — manage all data, users, and permissions',                                     TRUE, '/dashboard'),
   ('a5d221d3-622d-45a2-98f2-3b9aa7f4f32f', 'customer',       'Bearth Customer',       'Read-only access to own orders and NFTs',                                                   TRUE, NULL),
@@ -1172,7 +1149,6 @@ INSERT INTO roles (id, code, name, description, is_active, home_url) VALUES
   ('ef13b0ba-480f-4b06-8cb0-8695140b4b63', 'technical_team', 'Bearth Technical Team', 'Manage NFT records, products, and reports — no access to orders, customers, or financials', TRUE, '/dashboard')
 ON CONFLICT (id) DO NOTHING;
 
--- Permissions (V1 scope: dashboard.view + all nft_gen.*)
 INSERT INTO permissions (id, key, label, module, description, sort_order) VALUES
   ('fa7d9fb7-d1bb-42f7-9a7d-07e3c2eade70', 'dashboard.view',             'View Dashboard',         'dashboard', NULL, 1),
   ('0d5602aa-4e29-4347-a65e-aae94c36cca3', 'nft_gen.view',               'View NFT Generator',     'nft_gen',   NULL, 90),
@@ -1182,7 +1158,6 @@ INSERT INTO permissions (id, key, label, module, description, sort_order) VALUES
   ('fd223ff9-f045-4b12-94fa-162e7d748906', 'nft_gen.upload_ipfs',        'Upload to IPFS',         'nft_gen',   NULL, 94)
 ON CONFLICT (id) DO NOTHING;
 
--- Menus (V1: all 4 RBAC menus set is_active=TRUE; Dashboard + NFT Studio already TRUE)
 INSERT INTO menus (id, label, href, icon, module, sort_order, is_active, module_label) VALUES
   ('6ee66bdf-b3a7-47c8-b1e8-04040ddc5c3f', 'Dashboard',    '/dashboard',           'grid',       'dashboard',  10, TRUE,  'Overview'),
   ('5090e253-97f2-4004-ab93-9495aad748d0', 'NFT Studio',   '/dashboard/generator', 'cpu',        'nft_manage', 50, TRUE,  'NFT Management'),
@@ -1192,20 +1167,13 @@ INSERT INTO menus (id, label, href, icon, module, sort_order, is_active, module_
   ('c795cbe7-b64c-449d-b894-021a3dadca00', 'Admin Users',  '/admin/users',         'user-check', 'admin',      40, TRUE,  'System')
 ON CONFLICT (id) DO NOTHING;
 
--- role_permissions (exact from live DB, scoped to V1 permissions only)
 INSERT INTO role_permissions (id, role_id, permission_id, is_granted) VALUES
-  -- operation: dashboard.view
   ('25feec08-7026-43eb-b9ac-d6ac789a7681', '03b48ae7-afbe-4bf6-88cf-26ffe61bf90d', 'fa7d9fb7-d1bb-42f7-9a7d-07e3c2eade70', TRUE),
-  -- admin: nft_gen.view + dashboard.view
   ('7e0ed013-1885-43db-9bb2-df6ab5983765', '3d658c1b-2930-4873-a4d1-119d4970ea5c', '0d5602aa-4e29-4347-a65e-aae94c36cca3', TRUE),
   ('96212ff9-71ee-4e7a-9e1c-42232b425d78', '3d658c1b-2930-4873-a4d1-119d4970ea5c', 'fa7d9fb7-d1bb-42f7-9a7d-07e3c2eade70', TRUE),
-  -- ext_referrer: dashboard.view
   ('7b3d9e03-42c2-4e9a-8ff7-29faa02c0e7f', '65262ab0-8da1-42b7-b525-de38c54268d9', 'fa7d9fb7-d1bb-42f7-9a7d-07e3c2eade70', TRUE),
-  -- sales_team: dashboard.view
   ('e6273053-d2f0-4bdc-a9e6-765eaa2dbd42', '8c9100a2-f042-499f-b595-448e30a01b86', 'fa7d9fb7-d1bb-42f7-9a7d-07e3c2eade70', TRUE),
-  -- customer: dashboard.view
   ('993d5854-7a84-4976-8d5e-92f85dfcc682', 'a5d221d3-622d-45a2-98f2-3b9aa7f4f32f', 'fa7d9fb7-d1bb-42f7-9a7d-07e3c2eade70', TRUE),
-  -- technical_team: all nft_gen.* + dashboard.view
   ('5dbbd94e-7998-4ba2-88d7-4449fa59350c', 'ef13b0ba-480f-4b06-8cb0-8695140b4b63', '0d5602aa-4e29-4347-a65e-aae94c36cca3', TRUE),
   ('cc3ce984-4c15-4432-9b8f-cd5b216fc379', 'ef13b0ba-480f-4b06-8cb0-8695140b4b63', '45baea17-4476-442c-beb7-d648a7448e58', TRUE),
   ('4d7e2a9c-f253-4e27-9c97-2519334ae784', 'ef13b0ba-480f-4b06-8cb0-8695140b4b63', '77dedb96-97d4-4e9b-b915-bb5d337e560e', TRUE),
@@ -1214,9 +1182,6 @@ INSERT INTO role_permissions (id, role_id, permission_id, is_granted) VALUES
   ('3cc0b59d-0c28-464f-a9e1-aa96ebed1052', 'ef13b0ba-480f-4b06-8cb0-8695140b4b63', 'fd223ff9-f045-4b12-94fa-162e7d748906', TRUE)
 ON CONFLICT (id) DO NOTHING;
 
--- role_menus (exact from live DB)
--- admin: 4 RBAC menus
--- technical_team: Dashboard + NFT Studio + 4 RBAC menus
 INSERT INTO role_menus (role_id, menu_id, sort_order) VALUES
   ('3d658c1b-2930-4873-a4d1-119d4970ea5c', '5e25a286-923e-41c1-b000-c1be82e7c835', 10),
   ('3d658c1b-2930-4873-a4d1-119d4970ea5c', 'f3b0681c-c0eb-49c5-b5f4-c3c9ab3916c8', 20),

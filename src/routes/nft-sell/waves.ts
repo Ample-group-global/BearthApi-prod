@@ -1,4 +1,4 @@
-﻿import { Router } from "express";
+import { Router } from "express";
 import { ethers } from "ethers";
 import pool from "../../pool";
 import {
@@ -24,12 +24,6 @@ function withChainTimeout<T>(p: Promise<T>, ms = 8000): Promise<T | null> {
   return Promise.race([p, new Promise<null>(resolve => setTimeout(() => resolve(null), ms))]);
 }
 
-// nft_waves now holds one 7-wave set PER collection (mirrors nft_records'
-// collection_id split) -- wave_number alone is no longer unique, so every
-// DB-side wave lookup below needs collection_id too. On-chain contract calls
-// are untouched: the deployed contract is a single fixed-9,999-supply
-// instance with no per-collection addressing, so it only ever knows "wave
-// number", regardless of which collection's DB row we're mirroring into.
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 function requireCollectionId(req: import("express").Request, res: import("express").Response): string | null {
   const v = (req.query.collection_id ?? req.body?.collectionId) as string | undefined;
@@ -38,7 +32,6 @@ function requireCollectionId(req: import("express").Request, res: import("expres
   return null;
 }
 
-// GET /api/nft-sell/waves list all 7 waves (on-chain enriched, DB fallback)
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");
@@ -76,7 +69,6 @@ router.get("/", async (req, res, next) => {
   }
 });
 
-// GET /api/nft-sell/waves/schedule-status auto-trigger timeline for scheduler page
 router.get("/schedule-status", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");
@@ -92,7 +84,6 @@ router.get("/schedule-status", async (req, res, next) => {
   }
 });
 
-// GET /api/nft-sell/waves/treasury-nfts list all treasury-held tokens (unsold â†' owner wallet)
 router.get("/treasury-nfts", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");
@@ -106,7 +97,6 @@ router.get("/treasury-nfts", async (req, res, next) => {
   }
 });
 
-// POST /api/nft-sell/waves/resync replay all events from block history to rebuild DB.
 router.post("/resync", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -120,7 +110,6 @@ router.post("/resync", async (req, res, next) => {
   }
 });
 
-// GET /api/nft-sell/waves/:num single wave (DB + on-chain)
 router.get("/:num", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");
@@ -160,7 +149,6 @@ router.get("/:num", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/schedule set wave start/end time on-chain
 router.put("/:num/schedule", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -241,8 +229,6 @@ router.put("/:num/schedule", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/price set wave price (only before first sale)
-// Body: { priceEth: string }  e.g. "0.0303"
 router.put("/:num/price", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -259,7 +245,6 @@ router.put("/:num/price", async (req, res, next) => {
     const priceWei = ethers.parseEther(priceStr);
     const receipt = await contractSetWavePrice(num, priceWei, collectionId);
 
-    // Mirror confirmed price to DB so listings, cards, and exports show the correct value
     await pool.query(
       "UPDATE nft_waves SET default_price_eth = $2, last_tx_hash = $3, updated_at = NOW() WHERE wave_number = $1 AND collection_id = $4",
       [num, parseFloat(priceStr), receipt.hash, collectionId],
@@ -271,8 +256,6 @@ router.put("/:num/price", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/purchase-limit  set per-wave mint cap (0 = use global limit)
-// Body: { maxPerWallet: number }
 router.put("/:num/purchase-limit", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -296,9 +279,6 @@ router.put("/:num/purchase-limit", async (req, res, next) => {
 
     const receipt = await contractSetWavePurchaseLimit(num, maxPerWallet, collectionId);
 
-    // Mirror to DB -- purchase_limit_confirmed flips TRUE here regardless of
-    // the chosen value (including 0, which means "use the global limit"):
-    // calling this route at all IS the explicit confirmation (task #45).
     await pool.query(
       "UPDATE nft_waves SET max_per_wallet = $2, purchase_limit_confirmed = TRUE, updated_at = NOW() WHERE wave_number = $1 AND collection_id = $3",
       [num, maxPerWallet, collectionId],
@@ -310,7 +290,6 @@ router.put("/:num/purchase-limit", async (req, res, next) => {
   }
 });
 
-// POST /api/nft-sell/waves/:num/reveal  admin manually reveals a specific wave
 router.post("/:num/reveal", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -323,8 +302,6 @@ router.post("/:num/reveal", async (req, res, next) => {
     const collectionId = requireCollectionId(req, res);
     if (!collectionId) return;
 
-    // Pre-flight off-chain guard: wave must be closed; reveal date required only for auto strategy.
-    // These checks prevent a wasted on-chain TX that would revert anyway.
     const { rows: waveCheck } = await pool.query(
       "SELECT wave_number, wave_closed, reveal_scheduled_at, is_revealed, reveal_strategy FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
       [num, collectionId],
@@ -335,20 +312,16 @@ router.post("/:num/reveal", async (req, res, next) => {
       return res.status(409).json({ error: `Wave ${num} has already been revealed.` });
     if (!wv.wave_closed)
       return res.status(409).json({ error: `Wave ${num} must be closed before it can be revealed. Wait for the wave end time to pass.` });
-    // reveal_scheduled_at is only mandatory for auto strategy; manual strategy admin triggers directly
     if (wv.reveal_strategy !== 'manual' && !wv.reveal_scheduled_at)
       return res.status(409).json({ error: `Wave ${num} has no reveal date set. Set a reveal date first via the Waves page.` });
 
-    // Store URI in DB first so executeWaveReveal can pick it up
     await pool.query(
       "UPDATE nft_waves SET wave_reveal_uri = $1 WHERE wave_number = $2 AND collection_id = $3",
       [uri, num, collectionId],
     );
 
-    // Execute reveal with Fisher-Yates random token assignment
     const txHash = await executeWaveReveal(num, collectionId);
 
-    // Auto-treasury: if strategy='auto_treasury', mint all unsold tokens to treasury immediately after reveal
     const { rows: stratRows } = await pool.query(
       "SELECT unsold_strategy FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
       [num, collectionId],
@@ -356,11 +329,6 @@ router.post("/:num/reveal", async (req, res, next) => {
     let autoTreasuryTxHash: string | null = null;
     if (stratRows[0]?.unsold_strategy === 'auto_treasury') {
       try {
-        // contractTreasuryClose() -> callContract() already awaits
-        // syncReceiptLogs(receipt) internally (see the standalone
-        // /treasury-close route for the full explanation) -- token_id/
-        // owner_address/delivery_status_id should already be correctly set
-        // per token by the time this returns.
         const receipt = await contractTreasuryClose(num, null, collectionId);
         autoTreasuryTxHash = receipt.hash;
         const { rows: unsyncedRows } = await pool.query(
@@ -394,7 +362,6 @@ router.post("/:num/reveal", async (req, res, next) => {
         );
         console.log(`[reveal] Wave ${num} auto-treasury-close done. txHash=${autoTreasuryTxHash}`);
       } catch (autoErr) {
-        // Non-fatal: reveal already succeeded; admin can manually Move to Wallet as fallback
         console.error(`[reveal] Wave ${num} auto-treasury-close FAILED (reveal still OK):`, autoErr);
       }
     }
@@ -405,9 +372,6 @@ router.post("/:num/reveal", async (req, res, next) => {
   }
 });
 
-// POST /api/nft-sell/waves/:num/resync-reveal
-// Fixes wave DB state after a reveal where startingIndex was null or wrong.
-// Back-computes startingIndex from on-chain tokenURI, syncs schedule dates, re-runs metadata sync.
 router.post("/:num/resync-reveal", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -431,7 +395,6 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
     ];
     const nft = new ethers.Contract(CONTRACT_ADDR, abi, provider);
 
-    // Read on-chain wave info
     const [startTime, endTime, waveQty, isRevealed] = await Promise.all([
       nft.waveStartTime(num) as Promise<bigint>,
       nft.waveEndTime(num) as Promise<bigint>,
@@ -443,7 +406,6 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
     const scheduledEnd = endTime > 0n ? new Date(Number(endTime) * 1000).toISOString() : null;
     const qty = Number(waveQty);
 
-    // Back-compute startingIndex from tokenURI of the first sold token (reliable, no eth_getLogs)
     let startingIndex: number | null = null;
     if (isRevealed && qty > 0) {
       const { rows: tokenRows } = await pool.query<{ token_id: number }>(
@@ -454,19 +416,15 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
         const tokenId = tokenRows[0].token_id;
         try {
           const uri = await nft.tokenURI(tokenId) as string;
-          // uri format: ipfs://CID/some/path/METADATA_ID
           const raw = uri.split("/").pop() ?? "";
           const metadataId = parseInt(raw, 10);
           if (!isNaN(metadataId)) {
-            // metadataId = _waveFirstTokenId[wave] + (tokenId - firstTokenId + si) % qty
-            // â†' si = (metadataId - tokenId + qty) % qty  (firstTokenId terms cancel)
             startingIndex = ((metadataId - tokenId) % qty + qty) % qty;
           }
         } catch { /* non-fatal */ }
       }
     }
 
-    // Update wave DB record
     await pool.query(
       `UPDATE nft_waves SET
          scheduled_start  = COALESCE($2, scheduled_start),
@@ -479,7 +437,6 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
       [num, scheduledStart, scheduledEnd, qty, startingIndex, collectionId],
     );
 
-    // Re-run metadata sync so artwork/rarity/traits copy correctly with new startingIndex
     if (isRevealed) {
       await _syncRevealedMetadata(num, collectionId);
     }
@@ -490,8 +447,6 @@ router.post("/:num/resync-reveal", async (req, res, next) => {
   }
 });
 
-// GET /api/nft-sell/waves/:num/treasury-close-estimate
-// Returns signer wallet balance + estimated gas cost for treasury-close so the UI can warn before submission.
 router.get("/:num/treasury-close-estimate", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");
@@ -516,12 +471,11 @@ router.get("/:num/treasury-close-estimate", async (req, res, next) => {
 
     const gasPrice = feeData.gasPrice ?? BigInt(2_000_000_000);
 
-    let estimatedGasWei = BigInt(300_000) * gasPrice; // conservative fallback
+    let estimatedGasWei = BigInt(300_000) * gasPrice;
     try {
       const gasUnits = await contractRO.treasuryClose.estimateGas(num, treasuryAddr, { from: signer.address });
       estimatedGasWei = gasUnits * gasPrice;
     } catch {
-      // estimateGas can fail if wave guards are not met — use fallback
     }
 
     const balanceEth = parseFloat(ethers.formatEther(balanceWei));
@@ -537,10 +491,6 @@ router.get("/:num/treasury-close-estimate", async (req, res, next) => {
     next(err);
   }
 });
-// POST /api/nft-sell/waves/:num/treasury-close
-// Mints all unsold NFTs to the treasury wallet configured in the smart contract.
-// For waves with customer sales: wave MUST be revealed first.
-// For 0-minted waves: contract allows treasury-close without reveal (waveSoldCount == 0).
 router.post("/:num/treasury-close", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -556,14 +506,12 @@ router.post("/:num/treasury-close", async (req, res, next) => {
     );
     const waveRow = waveRows[0];
 
-    // Guard 1: wave must be closed
     if (!waveRow?.scheduled_end || new Date() <= new Date(waveRow.scheduled_end)) {
       return res.status(409).json({
         error: `Wave ${num} has not closed yet. Treasury transfer is only allowed after the wave end date passes.`,
       });
     }
 
-    // Check whether any customer actually minted in this wave
     const { rows: salesRows } = await pool.query(
       `SELECT COUNT(nr.id) AS cnt
          FROM nft_records nr
@@ -574,13 +522,11 @@ router.post("/:num/treasury-close", async (req, res, next) => {
     const hasCustomerSales = parseInt(salesRows[0]?.cnt ?? "0") > 0;
 
     if (!waveRow.wave_revealed && hasCustomerSales) {
-      // Guard 2: waves with customer sales must be revealed first
       return res.status(409).json({
         error: `Wave ${num} has not been revealed yet. Reveal the wave first before moving to treasury.`,
       });
     }
 
-    // Check on-chain state first — auto-trigger may have closed the wave but DB sync was skipped
     let txHash: string | null = null;
     let alreadyClosedOnChain = false;
     try {
@@ -590,25 +536,13 @@ router.post("/:num/treasury-close", async (req, res, next) => {
         console.log(`[treasury-close] Wave ${num} already closed on-chain — syncing DB only`);
       }
     } catch {
-      // ignore — proceed to contract call if on-chain state is unreadable
     }
 
     if (!alreadyClosedOnChain) {
-      // contractTreasuryClose() -> callContract() already awaits
-      // syncReceiptLogs(receipt) internally, which processes every Transfer
-      // log via nft_record_sync_mint -- setting token_id/owner_address/
-      // delivery_status_id correctly per token, not just a blanket status
-      // flip. By the time this call returns, every real treasury-minted
-      // token should already be fully synced.
       const receipt = await contractTreasuryClose(num, null, collectionId);
       txHash = receipt.hash;
     }
 
-    // Verify the sync actually completed rather than blanket-marking
-    // whatever's left as treasury_wallet (that used to paper over a failed
-    // sync by faking status without real token_id/owner_address/image data
-    // -- confirmed 2026-09-11 as the structural cause of "shows treasury_wallet
-    // but token_id is NULL forever" when the event listener missed logs).
     const { rows: unsyncedRows } = await pool.query(
       `SELECT COUNT(*) AS cnt FROM nft_records nr
         WHERE nr.wave_id = (SELECT id FROM nft_waves WHERE wave_number = $1 AND collection_id = $2)
@@ -647,7 +581,6 @@ router.post("/:num/treasury-close", async (req, res, next) => {
 });
 
 
-// GET /api/nft-sell/waves/:num/holder-snapshot list current holders for a wave
 router.get("/:num/holder-snapshot", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.view");
@@ -665,7 +598,6 @@ router.get("/:num/holder-snapshot", async (req, res, next) => {
   }
 });
 
-// POST /api/nft-sell/waves/:num/holder-merkle generate Merkle from holders + set allowlist root on-chain
 router.post("/:num/holder-merkle", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -698,8 +630,6 @@ router.post("/:num/holder-merkle", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/holder-priority set holder priority window in DB
-// Body: { start: string (ISO), end: string (ISO) }
 router.put("/:num/holder-priority", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -720,8 +650,6 @@ router.put("/:num/holder-priority", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/flash-sale toggle flash sale + set discount
-// Body: { is_flash_sale: boolean, flash_discount_pct?: number }
 router.put("/:num/flash-sale", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -746,8 +674,6 @@ router.put("/:num/flash-sale", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/tier-prices set per-rarity tier prices
-// Body: { tier_prices: { legendary?: number, epic?: number, rare?: number, common?: number } }
 router.put("/:num/tier-prices", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -770,7 +696,6 @@ router.put("/:num/tier-prices", async (req, res, next) => {
   }
 });
 
-// PUT /api/nft-sell/waves/:num/artist-config set artist edition config
 router.put("/:num/artist-config", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -796,7 +721,6 @@ router.put("/:num/artist-config", async (req, res, next) => {
   }
 });
 
-// POST /api/nft-sell/waves/:num/repair-treasury-mints
 router.post("/:num/repair-treasury-mints", async (req, res, next) => {
   try {
     requirePermission(req, "nft_waves.manage");
@@ -810,7 +734,6 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
     if (!RPC_URL) return res.status(500).json({ error: "ETH_RPC_URL not set" });
     const CONTRACT_ADDR = await resolveCollectionContractAddress(collectionId);
 
-    // 1. Load wave DB row
     const { rows: waveRows } = await pool.query(
       `SELECT id, quantity, starting_index FROM nft_waves WHERE wave_number = $1 AND collection_id = $2`,
       [num, collectionId],
@@ -818,7 +741,6 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
     if (!waveRows.length) return res.status(404).json({ error: `Wave ${num} not found` });
     const { id: waveId, quantity: waveQty, starting_index: startingIndex } = waveRows[0];
 
-    // 2. Get unassigned treasury records for this wave (numeric FIFO order)
     const { rows: unassigned } = await pool.query<{ id: string; serial_number: string }>(
       `SELECT nr.id, nr.serial_number
          FROM nft_records nr
@@ -832,8 +754,6 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
     if (!unassigned.length)
       return res.json({ ok: true, message: "No unassigned treasury records — already repaired", assigned: 0, revealed: 0 });
 
-    // 3. Scan Transfer mint events (from=0x0 → treasury recipient) via event logs.
-    //    ERC721A does NOT implement tokenOfOwnerByIndex — Transfer logs are the correct approach.
     const { getProvider } = await import("../../utils/contract-factory");
     const provider = getProvider();
     const TRANSFER_TOPIC = ethers.id("Transfer(address,address,uint256)");
@@ -848,7 +768,6 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
 
     const chainTokenIdSet = new Set<number>();
     const latestBlock = await provider.getBlockNumber();
-    // Look back 150k blocks (~25 days on Sepolia @ 15 s/block) to cover any recent testnet deploy
     const fromBlock = Math.max(0, latestBlock - 150_000);
     const CHUNK = 2_000;
 
@@ -870,10 +789,8 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
       }
     }
 
-    // Sort ascending — matches ERC721A sequential mint order for FIFO assignment
     const chainTokenIds = [...chainTokenIdSet].sort((a, b) => a - b);
 
-    // 4. Assign token_ids to unassigned records (FIFO)
     let assigned = 0;
     const toReveal: string[] = [];
     for (let i = 0; i < Math.min(chainTokenIds.length, unassigned.length); i++) {
@@ -893,7 +810,6 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
       assigned++;
     }
 
-    // 5. Set delivery_status=treasury_wallet + mark assigned records revealed
     let revealed = 0;
     if (toReveal.length) {
       const { rowCount } = await pool.query(
@@ -909,7 +825,6 @@ router.post("/:num/repair-treasury-mints", async (req, res, next) => {
       revealed = rowCount ?? 0;
     }
 
-    // 6. Re-run metadata sync (copies correct artwork to each token using VRF formula)
     if (assigned > 0 && startingIndex != null) {
       await _syncRevealedMetadata(num, collectionId);
     }

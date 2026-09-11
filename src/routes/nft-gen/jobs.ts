@@ -101,8 +101,6 @@ router.delete("/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── Items under job ───────────────────────────────────────────────────────────
-
 router.get("/:id/items", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -188,7 +186,6 @@ router.post("/:id/items/batch-ipfs", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// POST /api/nft-gen/jobs/:id/sync-records — sync IPFS-ready items to nft_records
 router.post("/:id/sync-records", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.generate");
@@ -196,8 +193,6 @@ router.post("/:id/sync-records", async (req, res, next) => {
     res.json({ synced });
   } catch (e) { next(e); }
 });
-
-// ── Upload batches under job ──────────────────────────────────────────────────
 
 router.post("/:id/upload-batches", async (req, res, next) => {
   try {

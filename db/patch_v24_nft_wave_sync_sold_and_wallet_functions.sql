@@ -1,13 +1,3 @@
--- Three of the eight missing SQL sync functions confirmed 2026-09-11 (task
--- #54) -- all called from contract.service.ts's event handlers, all
--- silently failing (caught+logged) since they were never created.
---
--- customer_wallets has no collection_id column at all (a real, separate
--- architectural gap -- see feedback-no-shared-contract-standing-policy.md),
--- so nft_wallet_sync_mint/nft_wallet_set_vip filter by wallet address only,
--- matching the table's current (collection-agnostic) design. Not fixed here
--- -- that's a bigger decision tracked separately, not a "straightforward" fix.
-
 CREATE OR REPLACE FUNCTION nft_wave_sync_sold(
   p_wave_number int,
   p_sold_count int,
@@ -25,11 +15,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- No unique constraint exists on customer_wallets.address (only the
--- surrogate `id` PK is unique) -- confirmed 2026-09-11 via pg_constraint.
--- ON CONFLICT (address) would fail outright. Using an explicit
--- update-then-insert-if-not-found instead of adding a new constraint,
--- which is a bigger schema change than this "straightforward" fix scope.
 CREATE OR REPLACE FUNCTION nft_wallet_sync_mint(
   p_address text,
   p_qty int,

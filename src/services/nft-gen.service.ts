@@ -5,14 +5,7 @@ import sharp from "sharp";
 import { getS3Client } from "../clients/s3";
 
 const FILEBASE_GATEWAY = "https://amgbearth.myfilebase.com/ipfs";
-// Lowered from 100 after a real incident: 100 (200 concurrent S3 calls per
-// batch counting HEAD+GET together) was enough to trip Filebase's transient
-// rate limiting on repeated full ~10k-item bucket scans, skipping hundreds
-// of genuinely-present items. See withRetry() below for the other half of
-// the fix.
 const SYNC_CONCURRENCY = 40;
-
-// ── Collections ──────────────────────────────────────────────────────────────
 
 export async function listCollections(params: { limit?: number; offset?: number }) {
   const { limit = 50, offset = 0 } = params;
@@ -83,8 +76,6 @@ export async function deleteCollection(id: string) {
   return rows[0] ?? null;
 }
 
-// ── Layers ───────────────────────────────────────────────────────────────────
-
 export async function listLayers(collectionId: string) {
   const { rows } = await pool.query(
     "SELECT * FROM nft_gen_layers_list($1::uuid)",
@@ -145,8 +136,6 @@ export async function reorderLayers(collectionId: string, items: { id: string; s
   return rows[0] ?? null;
 }
 
-// ── Traits ───────────────────────────────────────────────────────────────────
-
 export async function listTraits(layerId: string) {
   const { rows } = await pool.query(
     "SELECT * FROM nft_gen_traits_list($1::uuid)",
@@ -167,14 +156,6 @@ export async function createTrait(params: {
   return rows[0] ?? null;
 }
 
-// Layer-folder sync used to call createTrait() once per file over HTTP, then
-// (after a first fix) once per file over a single held connection — for a real
-// layer set (200+ traits) that's still 200+ sequential round-trips to Railway's
-// remote Postgres, each ~200-300ms, adding up to over a minute. This does the
-// whole layer as ONE set-based INSERT via nft_gen_traits_create_bulk (db/patch_v56),
-// cutting sync time from tens of seconds to under a second per layer (confirmed
-// live 2026-08-17: user reported "Save & Continue" feeling stuck; the per-trait
-// round-trip count, not HTTP overhead, was the real bottleneck).
 export async function createTraitsBulk(
   layerId: string,
   traits: Array<{ name: string; filePath: string; rarityTier?: string; storageProvider?: string; rarityWeight?: number }>,
@@ -218,12 +199,6 @@ export async function reconcileTraits(layerId: string, activeFilePaths: string[]
   return { deactivated: Number(rows[0]?.deactivated ?? 0) };
 }
 
-// Applies artist-supplied display names to this layer's active traits, matched
-// positionally against the artist's trait Excel (row order = file order, both
-// sorted the same numeric-aware way traits are shown elsewhere in the UI).
-// Traits otherwise default to their raw file stem (e.g. "1-16") — this is the
-// only path that replaces that with the real name (e.g. "Luna Head").
-// Throws if the counts don't match rather than silently mismapping names.
 export async function applyTraitNamesFromExcel(layerId: string, names: string[]) {
   const { rows: traits } = await pool.query(
     `SELECT id, file_path FROM nft_traits WHERE layer_id = $1::uuid AND is_active = true`,
@@ -258,8 +233,6 @@ export async function applyTraitNamesFromExcel(layerId: string, names: string[])
   }
   return { updated: traits.length };
 }
-
-// ── Generation Jobs ──────────────────────────────────────────────────────────
 
 export async function createJob(params: { collectionId: string; editionSize: number; createdBy?: string }) {
   const { collectionId, editionSize, createdBy } = params;
@@ -303,8 +276,6 @@ export async function deleteFailedJob(id: string): Promise<boolean> {
   return (rowCount ?? 0) > 0;
 }
 
-// ── Generated Items ──────────────────────────────────────────────────────────
-
 export async function insertItemsBatch(params: {
   jobId: string;
   items: Array<{
@@ -323,7 +294,6 @@ export async function insertItemsBatch(params: {
   try {
     await client.query("BEGIN");
 
-    // ON CONFLICT DO NOTHING → idempotent: safe to retry the same batch
     await client.query(
       `INSERT INTO nft_generated_items (job_id, edition_number, dna_hash, metadata_json)
        SELECT $1::uuid, t.edition_number, t.dna_hash, t.metadata_json::jsonb
@@ -337,7 +307,6 @@ export async function insertItemsBatch(params: {
       ],
     );
 
-    // SELECT all items for this batch — includes rows that conflicted (already existed)
     const { rows: itemRows } = await client.query(
       `SELECT id, edition_number FROM nft_generated_items
        WHERE job_id = $1::uuid AND edition_number = ANY($2::int[])`,
@@ -364,7 +333,6 @@ export async function insertItemsBatch(params: {
     }
 
     if (itemIds.length > 0) {
-      // ON CONFLICT DO NOTHING → idempotent: uq_nft_item_traits_item_trait (item_id, trait_type)
       await client.query(
         `INSERT INTO nft_item_traits (item_id, trait_type, trait_value, rarity_tier)
          SELECT t.item_id::uuid, t.trait_type, t.trait_value, t.rarity_tier
@@ -373,7 +341,6 @@ export async function insertItemsBatch(params: {
         [itemIds, traitTypes, traitValues, rarityTiers],
       );
 
-      // Backfill trait_id where still missing — safe to re-run (WHERE trait_id IS NULL)
       const allItemUuids = itemRows.map(r => r.id);
       await client.query(
         `UPDATE nft_item_traits nit
@@ -441,8 +408,6 @@ export async function getRarityReport(jobId: string) {
   return rows[0]?.data ?? null;
 }
 
-// ── Upload Batches ───────────────────────────────────────────────────────────
-
 export async function createUploadBatch(params: {
   jobId: string; provider: string; batchType: string; totalItems: number;
 }) {
@@ -502,20 +467,7 @@ export async function batchUpdateItemIpfsCids(params: {
   return rows[0]?.updated ?? 0;
 }
 
-// ── Sync generated items → nft_records ───────────────────────────────────────
-// Promotes exported items into nft_records for wave selling. Pass a jobId
-// to promote just that job's items, or omit it to sweep every job — when
-// sweeping all jobs, DISTINCT ON + created_at DESC picks the most recent
-// item per edition_number in case more than one job produced that edition.
 export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<number> {
-  // nft_records now holds multiple collections' data side by side, scoped by
-  // collection_id (see uq_nft_records_collection_serial: UNIQUE(collection_id,
-  // serial_number)) -- each collection independently numbers #1..#N, so
-  // scoping the uniqueness by collection is what actually makes coexistence
-  // safe. The old single-collection block that used to live here (with a
-  // `force` escape hatch) is no longer needed now that collisions can't
-  // happen across collections.
-
   const { rows: lookupRows } = await pool.query(
     `SELECT id, category, code FROM lookup_values
      WHERE (category = 'nft_stage'       AND code = 'genesis')
@@ -530,10 +482,6 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
 
   const blindBoxUri = await getBlindboxUri();
 
-  // Traits live in nft_item_traits, not on nft_generated_items.metadata_json —
-  // that column only ever stores the rarity summary ({rank, tier, score}),
-  // never an "attributes" array. Reading meta.attributes here always found
-  // nothing and silently wrote an empty traits object for every single row.
   const { rows: items } = jobId
     ? await pool.query(
         `SELECT gi.id AS generated_item_id, gi.edition_number, gi.ipfs_image_cid, gi.ipfs_metadata_cid, gi.metadata_json,
@@ -569,11 +517,6 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
     const meta = typeof item.metadata_json === 'string'
       ? JSON.parse(item.metadata_json) as Record<string, unknown>
       : (item.metadata_json as Record<string, unknown>) ?? {};
-    // Mirror the real Filebase metadata.json's attributes array, which
-    // includes Rarity Score/Rank/Tier as regular trait_type/value entries
-    // alongside the physical traits — not just the separate typed columns
-    // below (those exist for SQL querying/filtering; this keeps `traits`
-    // itself a complete match of what's actually on IPFS).
     const traits: Record<string, string> = { ...(item.traits ?? {}) };
     if (meta.score != null) traits['Rarity Score'] = Number(meta.score).toFixed(2);
     if (meta.rank != null) traits['Rarity Rank'] = `#${meta.rank}`;
@@ -633,14 +576,6 @@ export async function syncGeneratedItemsToNftRecords(jobId?: string): Promise<nu
   return rowCount ?? items.length;
 }
 
-// ── Sync directly from a Filebase bucket ─────────────────────────────────────
-
-// Both sync callers below run at SYNC_CONCURRENCY=100 (200 concurrent S3
-// calls per batch counting HEAD+GET together), which is enough to trip
-// Filebase's transient rate limiting on a full ~10k-item bucket scan -- a
-// real skip-count regression (16 -> 1594) surfaced this on a second scan run
-// minutes apart. Retry with backoff so a transient throttle/timeout doesn't
-// silently masquerade as "file genuinely missing" during data recovery.
 async function withRetry<T>(fn: () => Promise<T>, attempts = 6): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -670,18 +605,6 @@ async function filebaseGetJson(
   } catch { return { cid: null, body: {} }; }
 }
 
-// The blindbox placeholder is shared, collection-independent infra — not
-// artist data — so it always lives in one fixed shared bucket, never a
-// per-collection export bucket. This points at the real metadata.json for
-// the unrevealed state (name/description/image/animation_url/attributes),
-// not the raw image directly -- same metadata_uri (ipfs://{cid}) pattern
-// every other NFT's metadata already uses, and the only way a marketplace
-// ever sees the blindbox's video (animation_url), not just its thumbnail.
-// Which bucket pinned it never matters to whatever reads blind_box_uri
-// downstream since IPFS is content-addressed -- only this lookup needs to
-// agree on where to find it, and every caller must resolve it exactly the
-// same way. Config-driven, no hardcoded bucket literal; a genuine miss just
-// means no blindbox URL this sync, never a blocked sync.
 async function getBlindboxUri(): Promise<string | null> {
   const bucket = process.env.FILEBASE_ASSETS_BUCKET || process.env.FILEBASE_LAYERS_BUCKET;
   if (!bucket) return null;
@@ -689,10 +612,6 @@ async function getBlindboxUri(): Promise<string | null> {
   return cid ? `ipfs://${cid}` : null;
 }
 
-// Admin UI thumbnail, distinct from blind_box_uri above: that field is the
-// on-chain-facing metadata URI (name/description/image/animation_url), but
-// an <img> tag needs the actual picture, not a JSON document. Reads the same
-// shared blindbox.json and returns just its `image` field as a gateway URL.
 export async function getBlindboxImageUrl(): Promise<string | null> {
   const bucket = process.env.FILEBASE_ASSETS_BUCKET || process.env.FILEBASE_LAYERS_BUCKET;
   if (!bucket) return null;
@@ -780,11 +699,6 @@ export async function syncFromFilebaseBucket(bucket: string): Promise<{ synced: 
 
   if (!fbRows.length) return { synced: 0, skipped };
 
-  // Link each row back to the nft_generated_items row it came from, matched
-  // by image CID (a content hash, so it's correct even if this bucket ever
-  // held more than one job's output) — without this, nft_records ends up
-  // with generated_item_id NULL on every row, and the collection sync-status
-  // page permanently reads it as "not synced" even though the data is intact.
   const cids = fbRows.map(r => r.image_ipfs_hash);
   const { rows: giRows } = await pool.query(
     `SELECT id, ipfs_image_cid FROM nft_generated_items WHERE ipfs_image_cid = ANY($1::text[])`,
@@ -865,11 +779,6 @@ export async function uploadLayerImage(rel: string, buf: Buffer): Promise<void> 
   }));
 }
 
-// Generates the display thumbnail once, at upload time, from the buffer
-// already in memory (no extra S3 round-trip to re-fetch the original) and
-// stores it durably in S3 next to the source. This is what makes Organize/
-// Preview loads fast for anything uploaded from here on — no per-request
-// resize, no in-process cache that's lost on every restart.
 const THUMB_SIZE = 200;
 export async function uploadLayerImageWithThumb(rel: string, buf: Buffer): Promise<void> {
   const bucket = process.env.FILEBASE_LAYERS_BUCKET || 'bearth-layers';
@@ -882,13 +791,6 @@ export async function uploadLayerImageWithThumb(rel: string, buf: Buffer): Promi
   ]);
 }
 
-// Organize/Preview only ever display these at a few hundred px. Tries the
-// pre-generated thumbnail first (fast S3 GetObject, no resize work at all —
-// this is what uploadLayerImageWithThumb produces going forward). Falls back
-// to resizing the original on demand for anything uploaded before this
-// existed, and self-heals by writing the result back to S3 so it's a
-// persistent thumb from then on — no manual backfill needed, and nothing
-// breaks for pre-existing collections in the meantime.
 const thumbMemCache = new Map<string, Buffer>();
 export async function fetchLayerThumb(rel: string, size = THUMB_SIZE): Promise<Buffer | null> {
   const cacheKey = `${size}:${rel}`;
@@ -910,6 +812,6 @@ export async function fetchLayerThumb(rel: string, size = THUMB_SIZE): Promise<B
     getS3Client().send(new PutObjectCommand({ Bucket: bucket, Key: thumbKeyFor(rel, size), Body: thumb, ContentType: 'image/png' })).catch(() => {});
     return thumb;
   } catch {
-    return full; // fall back to original if it isn't a decodable image
+    return full;
   }
 }

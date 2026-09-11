@@ -10,7 +10,6 @@ export interface TaskRow {
   meta: Record<string, unknown>;
 }
 
-// Auto-created on first use — no migration file needed.
 let ensured = false;
 async function ensureTable(): Promise<void> {
   if (ensured) return;
@@ -30,7 +29,6 @@ async function ensureTable(): Promise<void> {
   ensured = true;
 }
 
-// Upserts task state. Never throws — in-memory Map is the primary source.
 export async function saveTask(id: string, taskType: string, row: TaskRow): Promise<void> {
   try {
     await ensureTable();
@@ -42,10 +40,9 @@ export async function saveTask(id: string, taskType: string, row: TaskRow): Prom
       [id, taskType, row.status, row.phase, row.progress, row.total,
        JSON.stringify(row.meta ?? {}), row.error ?? null],
     );
-  } catch { /* non-fatal — caller has in-memory fallback */ }
+  } catch { }
 }
 
-// Reads task state from DB. Returns null on miss or error.
 export async function getTask(id: string): Promise<TaskRow | null> {
   try {
     await ensureTable();
@@ -60,8 +57,6 @@ export async function getTask(id: string): Promise<TaskRow | null> {
   } catch { return null; }
 }
 
-// Signals Vercel to keep the function instance alive until the promise settles
-// (up to vercel.json maxDuration). On local dev / non-Vercel the call is a no-op.
 export function keepAlive(p: Promise<unknown>): void {
-  try { waitUntil(p); } catch { /* non-Vercel environment */ }
+  try { waitUntil(p); } catch { }
 }

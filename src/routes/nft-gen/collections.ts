@@ -31,7 +31,6 @@ router.post("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── Sync status across all collections ────────────────────────────────────────
 router.get("/sync-status", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -63,13 +62,6 @@ router.get("/sync-status", async (req, res, next) => {
         WHERE job_id = j.id
       ) fi ON true
       LEFT JOIN LATERAL (
-        -- Matched via generated_item_id -> job_id, NOT serial_number alone.
-        -- serial_number is just "#{edition_number}" and isn't unique across
-        -- collections, so matching by it counted a DIFFERENT collection's
-        -- rows whenever edition numbers overlapped (virtually always, since
-        -- every collection starts at #1) -- this collection would show as
-        -- "records synced" even though none of its own data was ever
-        -- actually written to nft_records.
         SELECT COUNT(*) AS records_count
         FROM nft_records nr
         JOIN nft_generated_items gi ON gi.id = nr.generated_item_id
@@ -106,13 +98,6 @@ router.get("/sync-status", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── Dashboard overview: per-collection minted/sold/revenue + active wave ──────
-// Reuses v_wave_schedule_status (patch_v08) for wave status instead of
-// re-deriving it -- the Waves page's own "ready to reveal" state pulls from
-// multiple sources (a separate schedule-status endpoint + client logic), too
-// involved to safely re-derive here without risking a subtly different
-// answer; this endpoint sticks to what's cleanly computable from one view:
-// which wave (if any) is actively selling right now, per collection.
 router.get("/dashboard-stats", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -196,11 +181,6 @@ router.delete("/:id", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── Deploy a dedicated smart contract for this collection ───────────────────
-// New collections only -- existing collections (Bearth V1, etc.) keep using
-// the shared global CONTRACT_ADDRESS and are untouched by this. Signer keys
-// live only in server-side env vars (DEPLOY_SEPOLIA_*/DEPLOY_MAINNET_*),
-// never accepted here from the request body.
 router.post("/:id/deploy-contract", async (req, res, next) => {
   try {
     const { userId } = requirePermission(req, "nft_gen.manage_collections");
@@ -226,7 +206,6 @@ router.post("/:id/deploy-contract", async (req, res, next) => {
   }
 });
 
-// ── Layers nested under collection ──────────────────────────────────────────
 router.get("/:id/layers-organise", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -263,9 +242,6 @@ router.get("/:id/layers-organise", async (req, res, next) => {
             name: t.name,
             rel: t.file_path,
             defaultWeight: Number(t.rarity_weight ?? 1),
-            // Pass through as-is — null means "never explicitly classified"
-            // and must reach the frontend that way so it falls back to a
-            // live weight-based badge instead of a forced, misleading default.
             rarityTier: t.rarity_tier ?? null,
           }))
           .sort((a: any, b: any) =>
@@ -318,8 +294,6 @@ router.put("/:id/layers/reorder", async (req, res, next) => {
     res.json(result);
   } catch (e) { next(e); }
 });
-
-// ── Jobs nested under collection ─────────────────────────────────────────────
 
 router.post("/:id/jobs", async (req, res, next) => {
   try {

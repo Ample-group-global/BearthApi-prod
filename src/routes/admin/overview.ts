@@ -4,10 +4,6 @@ import { requirePermission } from "../../adminAuth";
 
 const router = Router();
 
-// GET /api/admin/overview -- read-only aggregate stats for the Admin dashboard
-// (NFT status breakdown, wave schedule/reveal summary, customers, team members).
-// Gated on customers.view (held by admin/operation/technical_team, not by the
-// customer-facing roles) -- this is read-only summary data, not a new action surface.
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "customers.view");

@@ -8,10 +8,6 @@ import { HttpError } from "../errors";
 let _contractRO: Contract | null = null;
 let _contractSigned: Contract | null = null;
 
-// Legacy single-collection path (Contract Operations page, nft_collection_config
-// id=1 -- predates the nft_collections/collection-wise deploy feature and has
-// no row of its own there). Untouched by the 2026-09-10 per-collection fix
-// below -- this is a separate, pre-existing system, not a fallback for it.
 export function getContractReadOnly(): Contract {
   if (!_contractRO) {
     const addr = process.env.CONTRACT_ADDRESS;
@@ -24,7 +20,6 @@ export function getContractReadOnly(): Contract {
 export function getContractWithSigner(): Contract {
   if (!_contractSigned) {
     const addr = process.env.CONTRACT_ADDRESS;
-    // CONTRACT_PRIVATE_KEY is the per-environment signer key:
     const privateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
     if (!addr) throw new Error("CONTRACT_ADDRESS env var is required");
     if (!privateKey) throw new Error("CONTRACT_PRIVATE_KEY (or FIXED_PRIVATE_KEY) env var is required");
@@ -34,11 +29,6 @@ export function getContractWithSigner(): Contract {
   return _contractSigned;
 }
 
-// ── Per-collection contract resolution (collection-wise deploys) ───────────────
-// Single source of truth: nft_collections.contract_address. No env-var
-// fallback -- a collection with no deployed contract is a real error state
-// (caught pre-2026-09-10 only by accident, via a bug where every collection's
-// wave calls silently hit whatever the global CONTRACT_ADDRESS happened to be).
 const _contractROByCollection = new Map<string, Contract>();
 const _contractSignedByCollection = new Map<string, Contract>();
 
@@ -52,12 +42,6 @@ export async function resolveCollectionContractAddress(collectionId: string): Pr
   return addr;
 }
 
-// Reverse of resolveCollectionContractAddress -- every wave-scoped sync
-// function (nft_wave_sync_sold, _schedule, _price, _treasury_close) filters
-// by wave_number alone, which is NOT collection-unique (every collection has
-// its own waves 1-7). Without resolving which collection actually emitted
-// this event, syncing one collection's WaveSold/WaveClosedTreasury/etc could
-// silently overwrite a DIFFERENT collection's same-numbered wave.
 async function resolveCollectionIdFromContractAddress(contractAddress: string): Promise<string | null> {
   const { rows } = await pool.query(
     "SELECT id FROM nft_collections WHERE LOWER(contract_address) = LOWER($1)",
@@ -66,12 +50,6 @@ async function resolveCollectionIdFromContractAddress(contractAddress: string): 
   return rows[0]?.id ?? null;
 }
 
-// Must be called right after nft_collections.contract_address changes for a
-// collection (redeploy) -- otherwise every getContract*ForCollection() call
-// keeps returning the OLD contract instance forever (confirmed 2026-09-10:
-// "Push Schedule to Chain" landed on the old contract after a redeploy,
-// showing real schedule+6 mints on the stale one while the new contract sat
-// at epoch-zero -- only fixed that time by restarting the whole server).
 export function invalidateCollectionContractCache(collectionId: string): void {
   _contractROByCollection.delete(collectionId);
   _contractSignedByCollection.delete(collectionId);
@@ -98,7 +76,6 @@ export async function getContractWithSignerForCollection(collectionId: string): 
   return c;
 }
 const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
-  // Wave / supply
   WaveSoldOut: "This wave is sold out",
   SupplyExceeded: "Collection is sold out 9,999 max supply reached",
   WaveNotStarted: "This wave has not started yet",
@@ -108,7 +85,6 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   WavePriceLocked: "Wave price cannot be changed after the first sale",
   WaveStillActive: "Wave is still active  wait for it to end before closing",
   InvalidWaveNumber: "Invalid wave number  must be 1 to 7",
-  // Mint
   AlreadyClaimed: "This wallet has already claimed its free mint",
   NotAllowlisted: "This wallet is not on the allowlist",
   WrongPayment: "Incorrect ETH amount sent",
@@ -116,10 +92,8 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   WalletBlocked: "This wallet has been blocked from minting",
   InvalidQuantity: "Invalid quantity  must be at least 1",
   TokenAlreadyMinted: "Token has already been minted",
-  // Phase / state
   WrongPhase: "This action is not available in the current phase",
   InvalidPhase: "Cannot move to an earlier phase",
-  // Params
   ZeroAddress: "Address cannot be zero",
   InvalidTime: "Invalid time  end must be after start and in the future",
   InvalidURI: "Invalid URI  must not be empty",
@@ -128,22 +102,16 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   ArrayLengthMismatch: "Array length mismatch between tokenIds and values",
   TokenDoesNotExist: "Token does not exist",
   InvalidEmergencyTransfer: "Invalid emergency transfer parameters",
-  // Transfer / SBT
   TransferNotAllowed: "Transfer not allowed  SBT mode is on or account is blocked",
   SBTCannotBeApproved: "Cannot approve an SBT token",
   MarketplaceNotAllowed: "This marketplace is not approved by the transfer validator",
-  // Finance
   RefundFailed: "ETH refund to buyer failed",
   TransferFailed: "ETH transfer to treasury failed",
   NoBalance: "No ETH balance available to withdraw",
-  // Access
   AccessControlUnauthorizedAccount: "Caller does not have the required role",
-  // Pause
   EnforcedPause: "Contract is paused",
   ExpectedPause: "Contract is not currently paused",
-  // Reentrancy
   ReentrancyGuardReentrantCall: "Reentrant call detected",
-  // ERC721A internals
   URIQueryForNonexistentToken: "Token does not exist",
   MintToZeroAddress: "Cannot mint to zero address",
   MintZeroQuantity: "Cannot mint zero quantity",
@@ -181,11 +149,6 @@ export async function callContract(
     await syncReceiptLogs(receipt);
     return receipt;
   } catch (err) {
-    // Use HttpError (not a plain Error) so the decoded, human-readable revert
-    // reason actually reaches the API response -- errorHandler.ts only
-    // preserves the message for HttpError instances; a plain Error here was
-    // silently discarded into a generic "Something went wrong" 500, hiding
-    // e.g. "Caller does not have the required role" behind an unhelpful message.
     const readable = decodeContractError(err);
     if (readable) throw new HttpError(400, readable);
     throw err;
@@ -216,12 +179,6 @@ async function syncEvent(
   logIndex: number,
   contractAddress: string
 ): Promise<void> {
-  // On-chain reads inside this function (waveSoldCount, treasuryWallet,
-  // getTokenWave, ...) MUST hit the contract that actually emitted this log,
-  // not the legacy getContractReadOnly() singleton -- for a collection-wise
-  // deploy those are two different addresses, and reading the wrong one
-  // silently produces wrong data (e.g. comparing a mint's `to` against the
-  // LEGACY contract's treasuryWallet() instead of this collection's own).
   const emittingContract = new ethers.Contract(contractAddress, BearthNFT_ABI, getProvider());
   const collectionId = await resolveCollectionIdFromContractAddress(contractAddress);
   try {
@@ -234,14 +191,12 @@ async function syncEvent(
 
     switch (eventName) {
       case "WaveSold": {
-        // WaveSold(waveNum indexed, buyer indexed, qty)
         const [waveNum, buyer, qty] = args as [bigint, string, bigint];
         const waveNumN = Number(waveNum);
         const isWl = waveNumN === 1;
         const onChainCount: bigint = await emittingContract.waveSoldCount(waveNum);
         await pool.query("SELECT nft_wave_sync_sold($1,$2,$3,$4)", [waveNumN, Number(onChainCount), txHash, collectionId]);
         await pool.query("SELECT nft_wallet_sync_mint($1,$2,$3,$4)", [buyer.toLowerCase(), Number(qty), isWl || null, txHash]);
-        // Auto-register buyer (creates customer user if wallet has no user_id)
         await pool.query("SELECT customer_wallet_auto_register($1, $2)", [buyer.toLowerCase(), "customer_mint"]);
         break;
       }
@@ -271,7 +226,6 @@ async function syncEvent(
       }
 
       case "WaveClosedTreasury": {
-        // WaveClosedTreasury(waveNum indexed, recipient indexed, qty)
         const [waveNum, recipient, qty] = args as [bigint, string, bigint];
         await pool.query("SELECT nft_wave_sync_treasury_close($1,$2,$3,$4,$5)", [
           Number(waveNum), recipient.toLowerCase(), Number(qty), txHash, collectionId,
@@ -287,7 +241,6 @@ async function syncEvent(
       }
 
       case "WaveRevealed": {
-        // WaveRevealed(waveNum indexed, uri, timestamp)
         const [waveNum, uri] = args as [bigint, string, bigint];
         await pool.query("SELECT nft_wave_sync_reveal($1,$2,$3,$4)", [Number(waveNum), uri, txHash, collectionId]);
         break;
@@ -334,25 +287,21 @@ async function syncEvent(
         const [from, to, tokenId] = args as [string, string, bigint];
         const tokenIdN = Number(tokenId);
         if (from === ethers.ZeroAddress) {
-          // Mint event — sync DB record and log
           const waveNum: bigint = await emittingContract.getTokenWave(tokenId);
           const waveNumN = Number(waveNum);
-          // Treasury-swept (unsold) mints must NOT display the same "sold"
-          // status as a real customer purchase -- see task #29/#28 (2026-09-10).
           const treasuryWallet: string = await emittingContract.treasuryWallet();
           const isTreasury = to.toLowerCase() === treasuryWallet.toLowerCase();
           await pool.query("SELECT nft_record_sync_mint($1,$2,$3,$4,$5,$6)", [tokenIdN, to.toLowerCase(), waveNumN, txHash, collectionId, isTreasury]);
           logNftActivity({ tokenId: tokenIdN, action: "mint", source: "on_chain", platform: "bearth", toWallet: to.toLowerCase(), txHash: txHash ?? undefined, blockNumber, details: { waveNumber: waveNumN } });
           break;
         }
-        if (to === ethers.ZeroAddress) break; // burn — no action needed
+        if (to === ethers.ZeroAddress) break;
         await pool.query("SELECT nft_record_sync_transfer($1,$2,$3,$4)", [tokenIdN, to.toLowerCase(), null, txHash]);
         const { platform: mktPlatform, source: mktSource } = await detectMarketplace(txHash ?? "");
         logNftActivity({ tokenId: tokenIdN, action: mktSource === "external" ? "sale" : "transfer", source: mktSource, platform: mktPlatform, fromWallet: from.toLowerCase(), toWallet: to.toLowerCase(), txHash: txHash ?? undefined, blockNumber });
         break;
       }
 
-      // Log-only events (no DB state change needed)
       case "Bred":
       case "TransferValidatorUpdated":
       case "Paused":
@@ -375,10 +324,6 @@ export async function syncReceiptLogs(receipt: ethers.TransactionReceipt): Promi
     try {
       const parsed = iface.parseLog({ topics: log.topics as string[], data: log.data });
       if (!parsed) continue;
-      // log.address is the contract that actually emitted this event -- NOT
-      // necessarily receipt.to (e.g. a proxy-routed call) or the legacy
-      // getContractReadOnly() singleton. Pass it through so syncEvent reads
-      // on-chain state (waveSoldCount, treasuryWallet, ...) from the right place.
       await syncEvent(
         parsed.name,
         [...parsed.args],
@@ -388,7 +333,6 @@ export async function syncReceiptLogs(receipt: ethers.TransactionReceipt): Promi
         log.address
       );
     } catch {
-      // Unknown event from another contract in the same tx  skip
     }
   }
 }
@@ -399,11 +343,6 @@ const WATCHED_EVENTS = [
   "TransferValidatorUpdated", "Paused", "Unpaused",
 ];
 
-// Attaches live event listeners to ONE specific contract address. A customer
-// wallet minting directly on-chain (via Bearth-FE, its own signer -- never
-// touching this server) can ONLY ever be picked up by a listener like this;
-// there is no other sync path for that case. Used both for the legacy
-// single-collection contract and for every collection-wise deploy below.
 function attachListenersFor(contract: Contract, label: string): number {
   const abiEventNames = new Set(
     contract.interface.fragments
@@ -428,12 +367,6 @@ function attachListenersFor(contract: Contract, label: string): number {
   return registered;
 }
 
-// Registers event listeners for one freshly-deployed collection's contract
-// immediately, rather than waiting for the next server restart to pick it up
-// (startEventListeners() below only ever runs once, at boot -- confirmed
-// 2026-09-10: a real customer mint on a same-session redeploy never synced
-// until the whole server was manually restarted). Call this right after a
-// deploy writes the new contract_address to nft_collections.
 export async function attachListenersForCollection(collectionId: string): Promise<void> {
   const { rows } = await pool.query<{ name: string; contract_address: string }>(
     "SELECT name, contract_address FROM nft_collections WHERE id = $1 AND contract_address IS NOT NULL",
@@ -449,15 +382,6 @@ export async function attachListenersForCollection(collectionId: string): Promis
 export async function startEventListeners(): Promise<void> {
   if (process.env.VERCEL) return;
 
-  // Legacy single-collection contract (Contract Operations page). Guarded
-  // (env var checked, own try/catch) rather than called unconditionally --
-  // getContractReadOnly() THROWS if CONTRACT_ADDRESS is unset, and that used
-  // to happen before the collection-wise loop below ever ran. Since this
-  // function is synchronous top-to-bottom, that throw would have skipped
-  // attaching listeners for every real nft_collections contract too, not
-  // just the legacy one -- a landmine for the day CONTRACT_ADDRESS is finally
-  // retired per the no-shared-contract policy. No behavior change today
-  // (CONTRACT_ADDRESS is currently set, so this branch still runs the same).
   let legacyAddress: string | null = null;
   if (process.env.CONTRACT_ADDRESS) {
     try {
@@ -470,18 +394,12 @@ export async function startEventListeners(): Promise<void> {
     }
   }
 
-  // Every collection-wise deploy also needs its own listeners -- otherwise a
-  // real customer's on-chain mint on THAT contract never syncs to nft_records
-  // at all (confirmed 2026-09-10: 5 real CW1-5 mints stayed "pre_mint" in the
-  // NFT List page indefinitely). See task #25/#29 for the fuller fix (removing
-  // the legacy single-contract concept entirely); this is the minimum needed
-  // so collection-wise mints actually sync.
   try {
     const { rows } = await pool.query<{ id: string; name: string; contract_address: string }>(
       `SELECT id, name, contract_address FROM nft_collections WHERE contract_address IS NOT NULL`
     );
     for (const row of rows) {
-      if (legacyAddress && row.contract_address.toLowerCase() === legacyAddress) continue; // already attached
+      if (legacyAddress && row.contract_address.toLowerCase() === legacyAddress) continue;
       const contract = new ethers.Contract(row.contract_address, BearthNFT_ABI, getProvider());
       const count = attachListenersFor(contract, row.name);
       console.log(`[contract.service] Event listeners started on ${row.contract_address} (${row.name}, ${count}/${WATCHED_EVENTS.length} events)`);
@@ -494,9 +412,6 @@ const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 export async function resyncFromBlock(fromBlock = 0, collectionId?: string): Promise<{ synced: number; scannedBlocks: number; skippedChunks: number }> {
   const provider = getProvider();
-  // Without collectionId this only ever replayed the legacy global
-  // CONTRACT_ADDRESS's history -- a resync triggered for any other
-  // collection's wave silently rebuilt the wrong collection's data instead.
   const contract = collectionId ? await getContractReadOnlyForCollection(collectionId) : getContractReadOnly();
   const contractAddress = collectionId ? await resolveCollectionContractAddress(collectionId) : process.env.CONTRACT_ADDRESS;
   const iface = contract.interface;
@@ -631,7 +546,6 @@ export async function contractSetAllowlistRoot(
   return callContract("setAllowlistRoot", [root], {}, collectionId);
 }
 
-// Backward-compat alias used by whitelist route
 export const contractSetMerkleRoot = contractSetAllowlistRoot;
 
 export async function contractSetTreasuryWallet(
@@ -718,10 +632,6 @@ export async function contractTransferFromBatch(
   if (!ethers.isAddress(recipient)) throw new Error("Invalid recipient address");
   if (!tokenIds.length) throw new Error("tokenIds must not be empty");
   if (tokenIds.length > 50) throw new Error("Maximum 50 tokens per batch");
-  // Previously always read the legacy singleton's treasury wallet and called
-  // transferFrom against it regardless of collectionId -- a real token ID
-  // collision between two collections (each numbers its own tokens from 1)
-  // would silently transfer from the wrong collection's treasury.
   const contract = await getContractReadOnlyForCollection(collectionId);
   const treasury = (await contract.treasuryWallet()) as string;
   const results: { tokenId: number; txHash: string }[] = [];
@@ -769,11 +679,8 @@ export async function contractGetRoyalty(collectionId: string): Promise<{ receiv
   }
 }
 
-// isGenesis()/getSeries() were removed from the contract to reclaim EIP-170
-// bytecode headroom (both were pure wrappers around the still-public
-// getTokenWave()) -- derived the same way off-chain instead.
 export async function contractIsGenesis(tokenId: number): Promise<boolean> {
-  return (await contractGetSeries(tokenId)) <= 2; // Waves 1+2 are both the Genesis stage
+  return (await contractGetSeries(tokenId)) <= 2;
 }
 
 export async function contractGetSeries(tokenId: number): Promise<number> {

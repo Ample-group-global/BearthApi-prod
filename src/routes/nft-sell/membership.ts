@@ -5,7 +5,6 @@ import { requirePermission } from "../../adminAuth";
 
 const router = Router();
 
-// GET /api/nft-sell/membership — all tiers (active + inactive, page shows both)
 router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");
@@ -67,8 +66,6 @@ router.delete("/:id", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// GET /api/nft-sell/membership/verify?wallet=0x... — highest matching tier
-// for a wallet, based on its held (non-burned) tokens' wave + rarity.
 router.get("/verify", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.view");

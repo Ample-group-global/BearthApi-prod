@@ -18,19 +18,6 @@ import {
 import { exportMeta, refreshCidMeta, previewMeta, zipRegistry } from "./export-state";
 import { saveTask } from "../../utils/taskProgress";
 
-// I/O concurrency (fetching layers, uploading) and CPU concurrency
-// (Sharp/libvips compositing) have very different optimal levels — I/O
-// scales well into the hundreds, but compositing is bounded by the actual
-// core count, and libvips runs its own internal thread pool regardless of
-// how many JS-level Promise.all slots are "in flight". Without gating,
-// raising CONCURRENCY alone just means more editions sit queued holding
-// full-size image buffers (~16MB each for a 2000x2000 RGBA composite)
-// while waiting on a CPU pool that can only actually work on a few at
-// once — real memory cost for zero real parallelism gain. Explicitly
-// pin libvips' pool to the real core count instead of trusting its own
-// auto-detection (unreliable in some serverless environments), and gate
-// the composite step itself through a matching semaphore so the high
-// outer CONCURRENCY only ever benefits the I/O-bound portions.
 const CPU_COUNT = Math.max(2, os.cpus().length || 2);
 sharp.concurrency(CPU_COUNT);
 function createSemaphore(max: number) {
@@ -51,14 +38,6 @@ function createSemaphore(max: number) {
 const compositeGate = createSemaphore(CPU_COUNT);
 
 export const BATCH = 500;
-// Pushed toward the practical ceiling per explicit request. Each in-flight
-// compositing operation holds real memory (raw layer buffers + a ~16MB
-// uncompressed 2000x2000 RGBA output buffer) even while queued behind
-// libvips' internal CPU thread pool, so this isn't free to raise without
-// limit — too high risks a real OOM (the exact failure mode from the prior
-// c5bea71 incident, even though that specific bug is fixed). 150 is a
-// meaningfully aggressive value, not an unbounded one; watch for crashes
-// after this deploys and dial back if the instance can't hold it.
 export const CONCURRENCY = 150;
 const META_CONCURRENCY = 60;
 const REFRESH_CONCURRENCY = 20;
@@ -136,9 +115,6 @@ export async function runExport(
     syncToRecords: boolean; resumeFrom: number;
   },
 ) {
-  // collectionName/description/nameFormat are accepted here for backward
-  // compatibility with existing callers, but deliberately unused below —
-  // see the DB-anchored lookup inside runExportBody().
   const { bucket, format, width, height, total, syncToRecords, resumeFrom } = opts;
   const ext = format === "webp" ? "webp" : "png";
   const mime = ext === "webp" ? "image/webp" : "image/png";
@@ -147,11 +123,6 @@ export async function runExport(
   const fetchLayerBuf = makeLayerFetcher();
   const fetchLayerResized = makeResizedFetcher(fetchLayerBuf, width, height);
 
-  // Heartbeat, independent of any specific progress-update call site — this
-  // answers "is the process still alive", which is what the start-export
-  // route's staleness check needs. A process killed outright by the
-  // platform's execution-time limit stops updating this immediately, so a
-  // future export attempt can tell that apart from one that's merely slow.
   const heartbeat = setInterval(() => { state.lastUpdatedAt = Date.now(); }, 10_000);
   try {
     return await runExportBody();
@@ -161,20 +132,6 @@ export async function runExport(
 
   async function runExportBody() {
 
-  // Identity fields (name/description/name_format) MUST come from the
-  // collection's own DB row, not the request body — a 9,999-item export
-  // runs across many separate invocations (the original click, plus every
-  // stall-recovery resume), and each one is a fresh HTTP request that can
-  // carry a different or incomplete opts.collectionName/description. Two
-  // invocations of the SAME export previously sent different subsets of
-  // these fields, silently splitting one collection's metadata into two
-  // inconsistent naming/description patterns (confirmed live: exactly
-  // inverse-correlated "Bearth #N"/"" vs "#N"/"Bearth NFT" splits across
-  // the 9,999-item run). Reading once per invocation from `nft_collections`
-  // makes every invocation of the same collection_id produce byte-identical
-  // values, by construction — there is only one place the value can come
-  // from. opts.collectionName/description/nameFormat are still accepted on
-  // the route for backward compatibility but are no longer trusted here.
   const { rows: collRows } = await pool.query(
     `SELECT c.name, c.description, c.name_format FROM nft_generation_jobs j
      JOIN nft_collections c ON c.id = j.collection_id WHERE j.id = $1::uuid`,
@@ -213,14 +170,6 @@ export async function runExport(
       byEdition.get(row.edition_number)!.layers.push(row);
     }
     const editions = [...byEdition.keys()].sort((a, b) => a - b);
-    // Only warm the layer cache for editions this invocation will actually
-    // composite — on a resume mid-batch, most of the batch's editions are
-    // already uploaded and get skipped entirely (see the resumeFrom check
-    // below), but prewarming used to fetch+resize every unique layer image
-    // used ANYWHERE in the full 500-item batch regardless. Since a batch
-    // this size typically touches most of the layer set anyway, that made
-    // every resume pay close to the same fixed prewarm cost even when only
-    // a handful of editions actually remained.
     const remainingPaths = rows.filter(r => r.edition_number > resumeFrom).map(r => r.file_path);
     const uniquePaths = [...new Set(remainingPaths.filter(Boolean))] as string[];
     const PREWARM_C = 10;
@@ -256,33 +205,19 @@ export async function runExport(
     async function processOneImage() {
       while (cursor < editions.length) {
         const editionNum = editions[cursor++];
-        // Skip editions already uploaded before this resume point.
         if (editionNum <= resumeFrom) continue;
 
         const editionData = byEdition.get(editionNum)!;
         const layerRows = editionData.layers;
 
-        // ── Composite ────────────────────────────────────────────────────────
         const validLayers = layerRows.filter(l => l.file_path);
         const resized: Buffer[] = [];
         for (const layer of validLayers) {
           const buf = await fetchLayerResized(layer.file_path!);
-          // A trait row exists in the DB but its source image can't be fetched
-          // from storage — silently dropping it here used to let the export
-          // "succeed" while quietly compositing an incomplete image (a real
-          // incident: missing head/face layers shipped as if nothing were
-          // wrong). Every trait a generated NFT is supposed to have must
-          // actually be present, so a missing source image fails the whole
-          // export loudly instead of shipping a wrong NFT as correct.
           if (!buf) throw new Error(`Missing layer image for edition #${editionNum}: "${layer.trait_type}" -> "${layer.file_path}" not found in storage.`);
           resized.push(buf);
         }
 
-        // Gated to the real CPU count — the outer loop's high CONCURRENCY
-        // still lets many editions fetch their layers in parallel (I/O-bound,
-        // scales fine), but only CPU_COUNT of them actually run through
-        // Sharp at once, instead of every in-flight edition holding a full
-        // composite buffer while queued behind libvips' own thread pool.
         const imgBuf: Buffer = await compositeGate(async () => {
           if (resized.length === 0) {
             return sharp({
@@ -296,7 +231,6 @@ export async function runExport(
             .toBuffer();
         });
 
-        // Hand off to the sequential uploader — metadata written in Phase 2 with real CID.
         pending.set(editionNum, imgBuf);
         await drainImages();
 
@@ -308,15 +242,6 @@ export async function runExport(
 
     await Promise.all(Array.from({ length: CONCURRENCY }, processOneImage));
 
-    // The drain above only advances sequentially through `nextToUpload` — if
-    // this batch's edition numbers have a gap (e.g. a hole in edition_number
-    // values, which a collection whose supply changed after generation can
-    // legitimately have), the drain silently stalls right before the gap and
-    // every already-composited image queued behind it in `pending` is simply
-    // abandoned as the loop moves to the next batch's fresh queue. That
-    // previously let an export finish and report full success while a chunk
-    // of images were never actually uploaded — the export must fail loudly
-    // here instead, not ship (or silently report) an incomplete collection.
     if (pending.size > 0) {
       const stuckAt = nextToUpload;
       throw new Error(
@@ -332,12 +257,6 @@ export async function runExport(
   const ipfsUpdates: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string; imagePath: string }> = [];
   const missedCids: Array<{ editionNumber: number; imgKey: string; metaKey: string }> = [];
 
-  // Phase 2 has its own resume point, independent of the image resumeFrom —
-  // image upload can finish well before metadata/CID resolution does, and
-  // without this an invocation that dies mid-Phase-2 (Vercel's execution
-  // limit, a reconnect) always restarted metadata from edition #1, re-doing
-  // already-uploaded work every time and never advancing past whatever a
-  // single invocation's window could redo from scratch.
   let metaResumeFrom = 0;
   {
     let continuationToken: string | undefined;
@@ -389,7 +308,7 @@ export async function runExport(
           try {
             const metaHead = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: metaKey }));
             metaCid = (metaHead.Metadata?.["cid"] ?? "").trim();
-          } catch { /* not yet assigned — acceptable */ }
+          } catch { }
 
           if (zipOut) await zipOut.addFile(metaKey, Buffer.from(metaJson, "utf8"));
           if (imgCid) {
@@ -408,7 +327,6 @@ export async function runExport(
     async function processOneMeta() {
       while (cursor2 < editions2.length) {
         const editionNum = editions2[cursor2++];
-        // Skip editions whose metadata was already uploaded before this resume point.
         if (editionNum <= metaResumeFrom) continue;
 
         const { layers, rarityScore, rarityRank, rarityTier } = byEdition2.get(editionNum)!;
@@ -435,7 +353,6 @@ export async function runExport(
           ],
         }, null, 2);
 
-        // Hand off to the sequential uploader.
         pendingMeta.set(editionNum, { metaJson, imgCid: imgCid || "", metaKey, imgKey });
         await drainMeta();
 
@@ -465,19 +382,18 @@ export async function runExport(
         const imgCid = await pollCid(s3, bucket, imgKey, 60_000);
         if (!imgCid) { unresolvedCids++; continue; }
 
-        // Metadata was already uploaded in Phase 2 with a "pending" placeholder — patch it in place.
         try {
           const getResp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: metaKey }));
           const parsed = JSON.parse((await streamToBuffer(getResp.Body)).toString("utf8"));
           parsed.image = `ipfs://${imgCid}`;
           await s3.send(new PutObjectCommand({ Bucket: bucket, Key: metaKey, Body: JSON.stringify(parsed, null, 2), ContentType: "application/json" }));
-        } catch { /* metadata patch is best-effort — the CID is still recorded below */ }
+        } catch { }
 
         let metaCid = "";
         try {
           const metaHead = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: metaKey }));
           metaCid = (metaHead.Metadata?.["cid"] ?? "").trim();
-        } catch { /* not yet assigned — acceptable, the image field is already correct */ }
+        } catch { }
 
         recovered.push({ editionNumber, ipfsImageCid: imgCid, ipfsMetadataCid: metaCid, imagePath: imgKey });
       }
@@ -490,7 +406,6 @@ export async function runExport(
     }
   }
 
-  // ── Finalise pre-built ZIP and upload to Filebase (full run only) ────────
   if (zipOut && zipS3) {
     state.phase = "Finalising download ZIP…";
     try {
@@ -524,14 +439,6 @@ export async function runExport(
   }
 }
 
-// ── Range-parallel export slice ─────────────────────────────────────────────
-// A single slice of the range-fan-out path (export.ts's POST /range): images
-// + metadata/CID for just [rangeStart, rangeEnd), nothing else — no ZIP
-// build, no nft_records sync (those are collection-wide operations that only
-// make sense once, after every slice finishes; the client/route layer
-// handles that separately). Deliberately a separate function rather than a
-// branch inside runExport, so the existing single-shot path (already proven
-// live) is never touched by this addition.
 export async function runExportSlice(
   exportId: string,
   jobId: string,
@@ -541,9 +448,6 @@ export async function runExportSlice(
     rangeStart: number; rangeEnd: number; resumeFrom: number;
   },
 ) {
-  // collectionName/description/nameFormat are accepted here for backward
-  // compatibility with existing callers, but deliberately unused below —
-  // see the DB-anchored lookup inside runSliceBody().
   const { bucket, format, width, height, rangeStart, rangeEnd, resumeFrom } = opts;
   const ext = format === "webp" ? "webp" : "png";
   const mime = ext === "webp" ? "image/webp" : "image/png";
@@ -561,10 +465,6 @@ export async function runExportSlice(
   }
 
   async function runSliceBody() {
-    // Same DB-anchored identity fix as runExport — see its comment. A
-    // range-parallel export runs each slice as its OWN separate invocation
-    // (up to 8 concurrently, plus every stall-recovery resume of any one
-    // of them), so this is exactly where the split-identity bug bit hardest.
     const { rows: collRows } = await pool.query(
       `SELECT c.name, c.description, c.name_format FROM nft_generation_jobs j
        JOIN nft_collections c ON c.id = j.collection_id WHERE j.id = $1::uuid`,
@@ -574,7 +474,6 @@ export async function runExportSlice(
     const dbDescription = collRows[0]?.description ?? "";
     const dbNameFormat = collRows[0]?.name_format ?? "";
 
-    // ── Phase 1: composite + upload images for this slice only ─────────────
     const imgLoopStart = Math.max(rangeStart, Math.floor(resumeFrom / BATCH) * BATCH);
     for (let offset = imgLoopStart; offset < rangeEnd; offset += BATCH) {
       const batchEnd = Math.min(offset + BATCH, rangeEnd);
@@ -675,14 +574,9 @@ export async function runExportSlice(
       await saveTask(exportId, 'export', { status: 'running', phase: state.phase, progress: state.progress, total: sliceTotal, meta: { jobId, rangeStart, rangeEnd } });
     }
 
-    // ── Phase 2: metadata/CID for this slice only ───────────────────────────
     const ipfsUpdates: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string; imagePath: string }> = [];
     const missedCids: Array<{ editionNumber: number; imgKey: string; metaKey: string }> = [];
 
-    // Same "count what's really already there" resume pattern as the main
-    // export, but scoped to just this slice's range via the DB row range
-    // rather than a bucket-wide listing (a per-slice S3 prefix scan can't
-    // distinguish this slice's editions from another slice's numerically).
     let metaResumeFrom = rangeStart;
     {
       const { rows: doneRows } = await pool.query(
@@ -730,7 +624,7 @@ export async function runExportSlice(
             try {
               const metaHead = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: metaKey }));
               metaCid = (metaHead.Metadata?.["cid"] ?? "").trim();
-            } catch { /* not yet assigned — acceptable */ }
+            } catch { }
 
             if (imgCid) {
               ipfsUpdates.push({ editionNumber: nextMetaUpload, ipfsImageCid: imgCid, ipfsMetadataCid: metaCid, imagePath: imgKey });
@@ -806,12 +700,12 @@ export async function runExportSlice(
             const parsed = JSON.parse((await streamToBuffer(getResp.Body)).toString("utf8"));
             parsed.image = `ipfs://${imgCid}`;
             await s3.send(new PutObjectCommand({ Bucket: bucket, Key: metaKey, Body: JSON.stringify(parsed, null, 2), ContentType: "application/json" }));
-          } catch { /* best-effort */ }
+          } catch { }
           let metaCid = "";
           try {
             const metaHead = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: metaKey }));
             metaCid = (metaHead.Metadata?.["cid"] ?? "").trim();
-          } catch { /* acceptable */ }
+          } catch { }
           recovered.push({ editionNumber, ipfsImageCid: imgCid, ipfsMetadataCid: metaCid, imagePath: imgKey });
         }
       }
@@ -856,7 +750,6 @@ export async function runPreview(
       byEdition.get(row.edition_number)!.push(row);
     }
 
-    // Pre-warm the resized cache for all unique trait PNGs in this batch
     const uniquePaths = new Set<string>();
     for (const row of rows) { if (row.file_path) uniquePaths.add(row.file_path); }
     await Promise.all([...uniquePaths].map(async fp => {
@@ -873,13 +766,9 @@ export async function runPreview(
         const layerRows = byEdition.get(editionNum)!;
         const validLayers = layerRows.filter(l => l.file_path);
 
-        // All resized buffers are already in cache — no expensive decode/resize per NFT
         const resized: Buffer[] = [];
         for (const layer of validLayers) {
           const raw = await fetchLayerBuf(layer.file_path!);
-          // See runExport's identical check — a trait row without a fetchable
-          // source image must fail loudly, not silently render an incomplete
-          // preview as if it were correct.
           if (!raw) throw new Error(`Missing layer image for edition #${editionNum}: "${layer.trait_type}" -> "${layer.file_path}" not found in storage.`);
           resized.push(await getResized(layer.file_path!, raw));
         }
@@ -897,7 +786,6 @@ export async function runPreview(
             .toBuffer();
         }
 
-        // Industry-standard quality check: image must have visual variance (not all-one-color)
         let invalidReason = "";
         if (validLayers.length === 0) {
           invalidReason = "No visible layers — solid black";
@@ -932,14 +820,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
   const ext = format === "webp" ? "webp" : "png";
   const state = refreshCidMeta.jobs.get(refreshId)!;
   const s3 = getS3Client();
-  // jobId is supplied by the caller (the exact job the UI has loaded) rather
-  // than guessed as "most recently completed job" — with more than one
-  // completed job in the system, that guess has no relationship to which
-  // job actually owns the selected bucket, and would silently write
-  // resolved CIDs onto the wrong job's rows.
-
-  // Keeps the route's per-job staleness check from treating a genuinely
-  // still-running refresh as abandoned after 90s of no other update.
   const heartbeat = setInterval(() => { state.lastUpdatedAt = Date.now(); }, 10_000);
   try {
     return await runRefreshCidsBody();
@@ -949,7 +829,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
 
   async function runRefreshCidsBody() {
 
-  // 1. List every image key in the bucket (handles >1000 via pagination)
   state.phase = "Listing images in bucket…";
   const imageKeys: string[] = [];
   let continuationToken: string | undefined;
@@ -965,12 +844,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
     continuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
   } while (continuationToken);
 
-  // A bucket can legitimately hold more than one job's files over time —
-  // the export bucket-lock only stops two jobs writing to it AT ONCE, not
-  // a different job reusing it later. Without this filter, listing
-  // "images/" bucket-wide and writing whatever CID each key resolves to
-  // onto THIS jobId's rows would silently attach another job's real
-  // artwork CID to this job's edition numbers wherever they overlap.
   const { rows: ownEditionRows } = jobId
     ? await pool.query(`SELECT edition_number FROM nft_generated_items WHERE job_id = $1`, [jobId])
     : { rows: [] as { edition_number: number }[] };
@@ -985,32 +858,23 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
   state.total = scopedImageKeys.length;
   state.phase = `Found ${scopedImageKeys.length} images — refreshing CIDs…`;
 
-  // Editions whose DB row already has a CID — the export's own Phase 2 DB
-  // flush only happens once per 500-item batch, so an invocation killed
-  // mid-batch can leave metadata files fully written (with real CIDs) in
-  // storage while their batch's DB write never fired. Checking the JSON for
-  // a literal "pending" placeholder alone misses that case entirely, since
-  // the file already shows a resolved CID — only the DB row is behind.
   const { rows: dbResolvedRows } = jobId
     ? await pool.query(`SELECT edition_number FROM nft_generated_items WHERE job_id = $1 AND ipfs_image_cid IS NOT NULL AND ipfs_image_cid != ''`, [jobId])
     : { rows: [] as { edition_number: number }[] };
   const dbResolvedEditions = new Set(dbResolvedRows.map(r => r.edition_number));
 
   let cursor = 0;
-  // Accumulate resolved CID pairs for the DB batch write at the end
   const resolvedItems: Array<{ editionNumber: number; ipfsImageCid: string; ipfsMetadataCid: string; imagePath: string }> = [];
 
   async function processOne() {
     while (cursor < scopedImageKeys.length) {
       const imgKey = scopedImageKeys[cursor++];
-      // Extract edition number from "images/123.png" → 123
       const basename = imgKey.replace(/^images\//, "").replace(/\.\w+$/, "");
       const editionNum = parseInt(basename, 10);
       if (isNaN(editionNum)) { state.progress++; state.skipped++; continue; }
 
       const metaKey = `metadata/${editionNum}.json`;
 
-      // HeadObject both image and metadata in parallel — Filebase sets x-amz-meta-cid on IPFS-backed objects
       let imgCid: string;
       let metaCid: string;
       try {
@@ -1026,13 +890,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
         continue;
       }
 
-      // Fetch existing metadata JSON — needed below regardless of whether the
-      // header-based imgCid was found, since a completed export already
-      // writes a real "ipfs://<cid>" into the file body even when Filebase's
-      // x-amz-meta-cid object header lags behind or never gets attached (seen
-      // live: a fully-uploaded, fully-pinned collection whose headers simply
-      // never populated, leaving every item permanently "skipped" with no
-      // way to recover without this fallback).
       let parsed: Record<string, unknown>;
       try {
         const getResp = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: metaKey }));
@@ -1050,8 +907,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
       }
 
       if (!imgCid) {
-        // CID not yet assigned by Filebase, and not already resolved in the
-        // metadata file either — skip for now (user can re-run later)
         state.progress++; state.skipped++;
         state.phase = `Refreshing CIDs… ${state.progress} / ${state.total}`;
         continue;
@@ -1061,14 +916,12 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
       const missingInDb = jobId ? !dbResolvedEditions.has(editionNum) : false;
 
       if (!isPendingInFile && !missingInDb) {
-        // Already resolved in both storage and the database — nothing to do.
         state.progress++; state.skipped++;
         state.phase = `Refreshing CIDs… ${state.progress} / ${state.total}`;
         continue;
       }
 
       if (isPendingInFile) {
-        // Replace placeholder with real IPFS URI and re-upload to Filebase
         parsed.image = `ipfs://${imgCid}`;
         const newMeta = JSON.stringify(parsed, null, 2);
 
@@ -1080,8 +933,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
         }));
       }
 
-      // Collect for DB batch update — imgCid is guaranteed present here (checked above);
-      // metaCid may still be empty if Filebase hasn't assigned it yet, which is acceptable.
       resolvedItems.push({ editionNumber: editionNum, ipfsImageCid: imgCid, ipfsMetadataCid: metaCid, imagePath: imgKey });
 
       state.progress++;
@@ -1095,8 +946,6 @@ export async function runRefreshCids(refreshId: string, bucket: string, format: 
     state.phase = `Writing ${resolvedItems.length} CIDs to database…`;
     await batchUpdateItemIpfsCids({ jobId, items: resolvedItems });
 
-    // Mirrors the main export's syncToRecords toggle — this route must not
-    // sync to nft_records on its own just because CIDs got resolved.
     if (syncToRecords) {
       state.phase = "Syncing CIDs to NFT records…";
       await syncGeneratedItemsToNftRecords(jobId);

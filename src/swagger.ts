@@ -120,7 +120,6 @@ const options: swaggerJsdoc.Options = {
       },
     },
     paths: {
-      // ── Health ────────────────────────────────────────────────────────────
       "/api/health": {
         get: {
           tags: ["System"],
@@ -129,7 +128,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Auth ──────────────────────────────────────────────────────────────
       "/api/auth/admin/login": {
         post: {
           tags: ["Auth"],
@@ -197,7 +195,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Admin: Roles ──────────────────────────────────────────────────────
       "/api/admin/roles": {
         get: {
           tags: ["Admin - Roles"],
@@ -231,7 +228,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Admin: Permissions ────────────────────────────────────────────────
       "/api/admin/permissions": {
         get: {
           tags: ["Admin - Permissions"],
@@ -258,7 +254,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Admin: Menus ──────────────────────────────────────────────────────
       "/api/admin/menus": {
         get: {
           tags: ["Admin - Menus"],
@@ -292,7 +287,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Admin: Users ──────────────────────────────────────────────────────
       "/api/admin/users": {
         get: {
           tags: ["Admin - Users"],
@@ -325,7 +319,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Customers ────────────────────────────────────────────────
       "/api/customers": {
         get: {
           tags: ["Presale - Customers"],
@@ -370,7 +363,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Orders ───────────────────────────────────────────────────
       "/api/orders": {
         get: {
           tags: ["Presale - Orders"],
@@ -407,7 +399,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Products ─────────────────────────────────────────────────
       "/api/products": {
         get: {
           tags: ["Presale - Products"],
@@ -446,7 +437,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: NFT ──────────────────────────────────────────────────────
       "/api/nft": {
         get: {
           tags: ["Presale - NFT"],
@@ -474,7 +464,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Referrers ────────────────────────────────────────────────
       "/api/referrers": {
         get: {
           tags: ["Presale - Referrers"],
@@ -490,7 +479,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Master ───────────────────────────────────────────────────
       "/api/master": {
         get: {
           tags: ["Presale - Master"],
@@ -500,7 +488,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Reconciliation ───────────────────────────────────────────
       "/api/reconciliation": {
         get: {
           tags: ["Presale - Reconciliation"],
@@ -510,7 +497,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Reports ──────────────────────────────────────────────────
       "/api/reports": {
         get: {
           tags: ["Presale - Reports"],
@@ -521,7 +507,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Admin: Users (admin users via core router) ───────────────────
       "/api/users": {
         get: {
           tags: ["Presale - Users"],
@@ -537,7 +522,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Presale: Waves ───────────────────────────────────────────────────
       "/api/waves": {
         get: {
           tags: ["Presale - Waves"],
@@ -577,7 +561,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── NFT Generator ─────────────────────────────────────────────────────
       "/api/nft-gen/collections": {
         get: {
           tags: ["NFT Generator"],
@@ -660,7 +643,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Whitelist ─────────────────────────────────────────────────────────
       "/api/whitelist": {
         get: {
           tags: ["Whitelist"],
@@ -690,7 +672,6 @@ const options: swaggerJsdoc.Options = {
         },
       },
 
-      // ── Proof ─────────────────────────────────────────────────────────────
       "/api/proof": {
         get: {
           tags: ["Whitelist"],

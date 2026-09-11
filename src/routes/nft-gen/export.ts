@@ -32,8 +32,6 @@ async function safeZipFilename(jobId: string): Promise<string> {
   return (collectionName || "bearth-nft-collection").replace(/[^a-z0-9-_]+/gi, "-").toLowerCase();
 }
 
-// ── POST / — start server-side export ────────────────────────────────────────
-
 router.post("/", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -49,20 +47,10 @@ router.post("/", async (req, res, next) => {
     if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
     if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
     {
-      // Scoped to THIS job, not global — the lock used to be a single
-      // app-wide boolean, which meant one artist exporting one collection
-      // blocked every other artist's export for every other collection at
-      // the same time. A stale entry (its serverless invocation killed
-      // outright by the platform's execution-time limit, never running its
-      // own cleanup) is treated as abandoned once it's gone quiet longer
-      // than any real progress tick should take.
       const STALE_MS = 90_000;
       const runningEntry = [...exportMeta.jobs.entries()].find(([, j]) => j.status === 'running' && j.jobId === jobId);
       const isStale = !runningEntry || (Date.now() - runningEntry[1].lastUpdatedAt) > STALE_MS;
       if (runningEntry && !isStale) {
-        // Include the running job's own id/progress so the caller can show
-        // live progress instead of a dead-end "please wait" message — the
-        // artist has no way to gauge how much longer to wait otherwise.
         const [runningExportId, runningJob] = runningEntry;
         res.status(409).json({
           error: "An export is already running for this collection. Wait for it to complete before starting a new one.",
@@ -75,12 +63,6 @@ router.post("/", async (req, res, next) => {
       }
     }
     {
-      // Bucket-level lock, separate from the per-job lock above. Image and
-      // metadata keys are bucket-root (images/{edition}.png), not namespaced
-      // by job or collection — two different jobs racing the same bucket at
-      // once would silently overwrite each other's files. Sibling slices of
-      // THIS SAME job are excluded (they're expected to share the bucket);
-      // only a genuinely different job is a conflict.
       const STALE_MS = 90_000;
       const now = Date.now();
       const isLive = (j: { status: string; jobId?: string; bucket?: string; lastUpdatedAt: number }) =>
@@ -95,10 +77,6 @@ router.post("/", async (req, res, next) => {
       }
     }
 
-    // width/height are optional — most callers (e.g. Collection Sync Status)
-    // never had a reason to know them, since the collection already stores
-    // its own export resolution. Fall back to that single source of truth
-    // instead of requiring every caller to duplicate it.
     let width = bodyWidth;
     let height = bodyHeight;
     if (!width || !height) {
@@ -136,10 +114,6 @@ router.post("/", async (req, res, next) => {
     const exportId = randomUUID();
     exportMeta.jobs.set(exportId, { status: "running", progress: startFrom, total, phase: startFrom > 0 ? `Resuming from ${startFrom}…` : "Starting…", lastUpdatedAt: Date.now(), jobId, bucket });
 
-    // Remembers which bucket this job's artwork actually lives in — every
-    // sync path (nft_records, blindbox lookup) reads this back instead of
-    // guessing a single hardcoded bucket, so a different artist exporting to
-    // a different bucket is supported the same way.
     await pool.query(`UPDATE nft_generation_jobs SET export_bucket = $1 WHERE id = $2::uuid`, [bucket, jobId]);
 
     const exportJob = runExport(exportId, jobId, {
@@ -166,15 +140,6 @@ router.post("/", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /range — start one slice of a range-parallel export ──────────────────
-// The client fans a large collection out across several of these calls at
-// once (each covering a different [rangeStart, rangeEnd) edition range) to
-// get real wall-clock speedup — a single invocation's throughput is capped
-// by that instance's CPU allocation (see runExportSlice's compositeGate),
-// so running N slices concurrently on N separate instances is the only way
-// to meaningfully beat that ceiling. No ZIP build, no nft_records sync here
-// — those are collection-wide operations the client handles once, after
-// every slice reports done.
 router.post("/range", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.upload_ipfs");
@@ -226,9 +191,6 @@ router.post("/range", async (req, res, next) => {
       return;
     }
     {
-      // Same bucket-level lock as POST / — sibling slices of THIS job are
-      // excluded (they share the bucket by design); a different job's
-      // slices or single-shot export writing to the same bucket is not.
       const now = Date.now();
       const isLive = (j: { status: string; jobId?: string; bucket?: string; lastUpdatedAt: number }) =>
         j.status === 'running' && j.jobId !== jobId && j.bucket === bucket && (now - j.lastUpdatedAt) <= STALE_MS;
@@ -242,9 +204,6 @@ router.post("/range", async (req, res, next) => {
       }
     }
 
-    // Same bucket bookkeeping as the single-shot POST / — whichever slice
-    // lands first records it, redundant but harmless for sibling slices of
-    // the same job/bucket.
     await pool.query(`UPDATE nft_generation_jobs SET export_bucket = $1 WHERE id = $2::uuid`, [bucket, jobId]);
 
     const sliceResumeFrom = Math.max(rStart, Math.min(Number(resumeFrom) || rStart, rEnd));
@@ -279,14 +238,11 @@ router.post("/range", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /range/:sliceKey — poll one slice's status ─────────────────────────────
 router.get("/range/:sliceKey", async (req, res) => {
   const state = exportMeta.rangeSlices.get(req.params.sliceKey);
   if (!state) { res.status(404).json({ error: "Export slice not found." }); return; }
   res.json(state);
 });
-
-// ── POST /preview — start server-side image validation/preview ────────────────
 
 router.post("/preview", async (req, res, next) => {
   try {
@@ -308,7 +264,6 @@ router.post("/preview", async (req, res, next) => {
 
     const previewId = randomUUID();
 
-    // Thumbnails are a scratch cache, not layer source data — always OS temp dir.
     const previewDir = path.join(os.tmpdir(), "bearth-previews", previewId);
     fs.mkdirSync(previewDir, { recursive: true });
 
@@ -327,16 +282,12 @@ router.post("/preview", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /preview/:previewId — poll preview status ─────────────────────────────
-
 router.get("/preview/:previewId", (req, res) => {
   const state = previewMeta.jobs.get(req.params.previewId);
   if (!state) { res.status(404).json({ error: "Preview job not found." }); return; }
   const { dir, ...rest } = state;
   res.json(rest);
 });
-
-// ── GET /preview/:previewId/img/:edition — serve a thumbnail PNG ──────────────
 
 router.get("/preview/:previewId/img/:edition", (req, res) => {
   const state = previewMeta.jobs.get(req.params.previewId);
@@ -377,22 +328,10 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
 
     const zip = new ZipStream(res);
 
-    // Fast path: this job was already exported to Filebase — every image
-    // and metadata file is already sitting there, fully composited. Read
-    // them directly (2 GetObjects/edition) instead of recompositing from
-    // raw layers (~8 layer-source fetches + a Sharp composite per edition,
-    // work this job already paid for once during the real export).
     if (bucket) {
       console.log(`[download-zip] job ${jobId}: ${total} NFTs — fast path from bucket "${bucket}"`);
       const s3 = getS3Client();
       try {
-        // Sum real object sizes via ListObjectsV2 (cheap — a handful of
-        // paginated calls for ~20000 objects) so the client can show a real
-        // "X of Y" progress bar instead of just "X received…". Exposed as a
-        // custom header, not Content-Length — the actual ZIP stream is a
-        // few bytes larger per entry (local file headers, central
-        // directory), and Content-Length must match the real byte count
-        // exactly or the browser treats the download as truncated.
         let estimatedBytes = 0;
         for (const prefix of ["images/", "metadata/"]) {
           let token: string | undefined;
@@ -406,11 +345,6 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
 
         let cursor = 1;
         let cursorEnd = 0;
-        // Bounded to cursorEnd (the current batch's end), not total — a
-        // worker checking `cursor <= total` would keep pulling forward
-        // through the ENTIRE 9999-item collection on the very first batch
-        // iteration, so nothing ever reached zip.addFile() until virtually
-        // everything had already been fetched (the "0 B received" bug).
         async function worker() {
           const out: Array<{ n: number; imgBuf: Buffer; metaBuf: Buffer }> = [];
           while (cursor <= cursorEnd) {
@@ -487,9 +421,6 @@ router.get("/download-zip/:jobId", async (req, res, next) => {
             const resized: Buffer[] = [];
             for (const layer of validLayers) {
               const raw = await fetchLayerBuf(layer.file_path!);
-              // See export-workers.ts's identical check — a trait row without a
-              // fetchable source image must fail the download loudly, not
-              // silently ship an incomplete NFT image as if it were correct.
               if (!raw) throw new Error(`Missing layer image for edition #${editionNum}: "${layer.trait_type}" -> "${layer.file_path}" not found in storage.`);
               resized.push(await sharp(raw).resize(width, height, { kernel: sharp.kernel.lanczos3, fit: "fill" }).toBuffer());
             }
@@ -571,7 +502,7 @@ router.get("/presigned-zip/:jobId", async (req, res, next) => {
       const url = await getSignedUrl(
         getS3Client(),
         new GetObjectCommand({ Bucket: reg.bucket, Key: reg.zipKey, ResponseContentDisposition: contentDisposition }),
-        { expiresIn: 86400 }, // 24 hours
+        { expiresIn: 86400 },
       );
       res.json({ ready: true, url, bucket: reg.bucket, key: reg.zipKey });
       return;
@@ -602,7 +533,6 @@ router.post("/refresh-cids", async (req, res, next) => {
     if (!bucket) { res.status(422).json({ error: "bucket is required." }); return; }
     if (!jobId) { res.status(422).json({ error: "jobId is required." }); return; }
     {
-      // Scoped to this job, not global — same fix as the export lock above.
       const STALE_MS = 90_000;
       const runningEntry = [...refreshCidMeta.jobs.entries()].find(([, j]) => j.status === 'running' && j.jobId === jobId);
       const isStale = !runningEntry || (Date.now() - (runningEntry[1].lastUpdatedAt ?? 0)) > STALE_MS;
@@ -626,7 +556,6 @@ router.post("/refresh-cids", async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-// ── GET /refresh-cids/:refreshId — poll CID refresh status ───────────────────
 router.get("/refresh-cids/:refreshId", async (req, res) => {
   const state = refreshCidMeta.jobs.get(req.params.refreshId);
   if (state) { res.json(state); return; }
@@ -635,12 +564,6 @@ router.get("/refresh-cids/:refreshId", async (req, res) => {
   res.json(db);
 });
 
-// ── GET /cid-status?jobId=... — how many editions are missing a CID ───────────
-// So the UI can show the artist a real count up front instead of a hidden
-// "Advanced" section she has no way to know she needs to open. Declared
-// before the /:exportId catch-all below — Express matches route patterns
-// in declaration order, so a literal path placed after a `:param` route
-// would otherwise be swallowed by it.
 router.get("/cid-status", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -654,8 +577,6 @@ router.get("/cid-status", async (req, res, next) => {
     res.json({ total: Number(rows[0]?.total ?? 0), missing: Number(rows[0]?.missing ?? 0) });
   } catch (e) { next(e); }
 });
-
-// ── GET /:exportId — poll status ──────────────────────────────────────────────
 
 router.get("/:exportId", async (req, res) => {
   const state = exportMeta.jobs.get(req.params.exportId);

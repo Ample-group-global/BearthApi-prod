@@ -14,19 +14,10 @@ function getSigner(): ethers.Wallet {
   return new ethers.Wallet(privateKey, provider);
 }
 
-// contractAddress is always resolved per-collection by the caller (single
-// source of truth: nft_collections.contract_address) -- see 2026-09-10 fix,
-// this used to silently read the single global CONTRACT_ADDRESS env var
-// regardless of which collection's wave was being revealed.
 function getGenesisContract(signer: ethers.Wallet, contractAddress: string): ethers.Contract {
   return new ethers.Contract(contractAddress, GenesisABI, signer);
 }
 
-// Resolved per-collection from contract_reveal_coordinator_address (set at
-// deploy time in contract-deploy.service.ts) -- REVEAL_COORDINATOR_ADDRESS
-// was a single global env var that could only ever point at one collection's
-// coordinator, same class of bug as every other single-shared-contract issue
-// fixed 2026-09-10 (see task #25/#29).
 async function getCoordinatorContract(signer: ethers.Wallet, collectionId: string): Promise<ethers.Contract | null> {
   const { rows } = await pool.query<{ contract_reveal_coordinator_address: string | null }>(
     "SELECT contract_reveal_coordinator_address FROM nft_collections WHERE id = $1",
@@ -42,9 +33,8 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
     id: string;
     wave_number: number;
     wave_reveal_uri: string | null;
-    quantity: number;
   }>(
-    "SELECT id, wave_number, wave_reveal_uri, quantity FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
+    "SELECT id, wave_number, wave_reveal_uri FROM nft_waves WHERE wave_number = $1 AND collection_id = $2",
     [waveNum, collectionId],
   );
   if (!waveRows.length) throw new Error(`Wave ${waveNum} not found`);
@@ -93,7 +83,7 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
           console.log(`[reveal] Wave ${waveNum}: VRF requestId = ${vrfRequestId}`);
           break;
         }
-      } catch { /* skip unparseable logs */ }
+      } catch { }
     }
 
     await pool.query(
@@ -106,14 +96,6 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
       [waveNum, provenanceHash, vrfRequestId, collectionId],
     );
 
-    // Real fulfillment is normally fast (~15s once the VRF subscription is
-    // properly funded -- confirmed live 2026-09-11), but a subscription
-    // sitting below Chainlink's minimum-balance floor can leave a request
-    // pending for a long time before anyone notices and tops it up (observed
-    // 9+ hours in that exact scenario). 10 minutes was too tight to survive
-    // that without a confusing false-negative timeout; 30 minutes gives a
-    // realistic buffer for transient network/node delay while still failing
-    // in finite time if something is genuinely broken.
     const VRF_WAIT_TIMEOUT_MS = 30 * 60 * 1000;
     console.log(`[reveal] Wave ${waveNum}: waiting for WaveRevealed event (up to ${VRF_WAIT_TIMEOUT_MS / 60000} min)…`);
     const txHash = await _waitForWaveRevealed(nft, waveNum, VRF_WAIT_TIMEOUT_MS, requestReceipt.blockNumber);
@@ -141,25 +123,7 @@ export async function executeWaveReveal(waveNum: number, collectionId: string): 
   const txHash = receipt.hash;
   console.log(`[reveal] Wave ${waveNum}: revealed directly, tx: ${txHash}`);
 
-  // BearthNFT.sol's revealWave() computes its own starting index on-chain
-  // (`block.prevrandao % qty`, see contract source) purely for its own
-  // internal tokenURI() mapping -- _syncRevealedMetadata no longer needs this
-  // value at all (it reads tokenURI() directly per token now, see below), so
-  // this is recorded only as an audit trail of what actually happened
-  // on-chain. No fallback: if it can't be recovered correctly, record
-  // nothing rather than a wrong number that reads as real data later. The
-  // on-chain reveal itself already happened and is immutable regardless.
-  const block = await signer.provider!.getBlock(receipt.blockNumber);
-  if (!block?.prevRandao) {
-    throw new Error(
-      `Wave ${waveNum}: revealWave() succeeded on-chain (tx ${txHash}) but could not read prevRandao from block ${receipt.blockNumber} to record the real starting index. ` +
-      `The reveal itself is final and correct -- this only affects the DB audit trail. Investigate the RPC/provider before retrying.`
-    );
-  }
-  const startingIndexNum = Number(BigInt(block.prevRandao) % BigInt(wave.quantity));
-  console.log(`[reveal] Wave ${waveNum}: startingIndex (recovered from block ${receipt.blockNumber}) = ${startingIndexNum}`);
-
-  await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, txHash, null, startingIndexNum);
+  await _updateWaveRevealedInDB(wave.id, waveNum, revealUri, txHash, null, null);
   await _syncRevealedMetadata(waveNum, collectionId);
   return txHash;
 }
@@ -249,19 +213,6 @@ async function _updateWaveRevealedInDB(
   console.log(`[reveal] Wave ${waveNum} reveal state synced to DB — ${revealedRows ?? 0} customer NFTs marked revealed, ${pendingRows ?? 0} unsold → reserved`);
 }
 
-// Fetches wave_reveal_uri/<edition>.json directly from IPFS -- the SAME
-// frozen, immutable folder CID that on-chain tokenURI() reads from. This is
-// deliberately NOT a self-join against other nft_records rows: this function
-// used to copy artwork data from whichever row currently had
-// serial_number='#<edition>', but since a fully-sold wave's serial numbers
-// exactly cover its own token_id range, every "source" row is ALSO a
-// mutable "destination" row elsewhere in the same run. Running this
-// function more than once (confirmed 2026-09-11, ran 3x on Bearth Test1
-// Wave 1) let a later run read an EARLIER run's already-overwritten data as
-// if it were still pristine, cascading real identity corruption across
-// dozens of tokens (e.g. row #128 ended up holding row #232's data, which
-// itself held row #303's data). Fetching straight from the immutable folder
-// CID every time makes this function safe to call any number of times.
 const IPFS_GATEWAY = "https://ipfs.filebase.io/ipfs/";
 async function fetchFolderMetadata(folderCid: string, edition: number, attempt = 1): Promise<{
   attrs: Record<string, string>;
@@ -307,20 +258,6 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
 
   console.log(`[reveal] Wave ${waveNum}: syncing artwork for ${mintedTokens.length} tokens…`);
 
-  // Which artwork edition a token maps to used to be recomputed off-chain
-  // (`(token_id - 1 + startingIndex) % qty) + 1`) -- a second, independent
-  // implementation of math the contract already does in tokenURI(). Two
-  // sources of truth for the same computation drift: this one silently did
-  // STRING CONCATENATION instead of addition whenever startingIndex came
-  // back from Postgres as a string (bigint columns aren't numbers to `pg`),
-  // and separately assumed every wave starts at token 1 (only true for
-  // Wave 1 -- BearthNFT.sol actually bases the formula on each wave's own
-  // _waveFirstTokenId). Confirmed live 2026-09-11: replaying that exact
-  // formula against real data produced wrong values. Rather than fix the
-  // off-chain formula to match the contract's exactly, read the contract's
-  // own tokenURI() directly per token instead -- there is now exactly one
-  // place this computation exists (the contract), and it stays correct
-  // automatically even if the contract's own shuffle logic ever changes.
   const contractAddress = await resolveCollectionContractAddress(collectionId);
   const nft = new ethers.Contract(contractAddress, GenesisABI, getProvider());
 
@@ -331,7 +268,6 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
     await Promise.all(batch.map(async ({ id, token_id }) => {
       try {
         const uri = await (nft.tokenURI as (id: bigint) => Promise<string>)(BigInt(token_id));
-        // ipfs://<folderCid>/<metadataId>.json
         const withoutScheme = uri.replace(/^ipfs:\/\//, "");
         const slashIdx = withoutScheme.lastIndexOf("/");
         const folderCid = withoutScheme.slice(0, slashIdx);
@@ -347,8 +283,6 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
     }));
   }
 
-  // Fetch each unique (folder, edition) file exactly once, then apply to
-  // every token assigned that edition -- not a DB self-join.
   const uniqueKeys = [...new Set(assignments.map(a => `${a.folderCid}/${a.artworkEdition}`))];
   const editionMap = new Map<string, Awaited<ReturnType<typeof fetchFolderMetadata>>>();
   for (let i = 0; i < uniqueKeys.length; i += CONCURRENCY) {
@@ -388,15 +322,6 @@ export async function _syncRevealedMetadata(waveNum: number, collectionId: strin
   }
   console.log(`[reveal] Wave ${waveNum}: artwork sync complete — ${synced} updated, ${missing} missing (of ${mintedTokens.length} minted)`);
 
-  // Same 1%/5%/15% percentage thresholds generate.ts's computeRarity() uses
-  // at generation time (the canonical source) — this was previously a fixed
-  // rank cutoff (<=100/500/1500) with no relationship to the actual
-  // collection size, so any collection whose supply isn't close to ~10,000
-  // got every item mis-tiered here (e.g. a 50-item collection: rank<=100 is
-  // always true, so every revealed item became "legendary"). Scoped to this
-  // wave's own collection_id — nft_records now holds multiple collections
-  // side by side, so an unscoped COUNT(*) would use the combined total of
-  // every collection instead of just this one's real supply.
   const { rows: supplyRows } = await pool.query(`SELECT COUNT(*) AS total FROM nft_records WHERE collection_id = $1`, [collectionId]);
   const totalSupply = Number(supplyRows[0]?.total ?? 0);
   const legendaryMax = Math.ceil(totalSupply * 0.01);
@@ -478,7 +403,7 @@ export async function repairTreasuryMintsForWave(waveNum: number, collectionId: 
           tokenIdSet.add(tokenId);
           tokenIdToTxHash.set(tokenId, log.transactionHash);
         }
-      } catch { /* skip failed chunk */ }
+      } catch { }
       cursor = end + 1;
     }
   }

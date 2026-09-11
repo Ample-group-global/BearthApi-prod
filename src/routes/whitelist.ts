@@ -13,11 +13,6 @@ const MERKLE_ROOT_RE = /^0x[a-fA-F0-9]{64}$/;
 
 const testLimit = rateLimit({ windowMs: 60_000, limit: 60, standardHeaders: "draft-7", legacyHeaders: false });
 
-// Recomputes and stores merkle_root from the live address list -- but only
-// when no manual override is in effect (an admin's explicit PUT /merkle-root
-// must not be silently overwritten by the next add/remove). DB-only, no
-// on-chain push -- that stays a separate explicit action (POST /push-chain),
-// matching the Whitelist tab's own "Add" vs "Push to Chain" separation.
 async function refreshComputedRootUnlessOverridden(): Promise<void> {
   const { rows } = await pool.query("SELECT manual_override FROM whitelist_state WHERE id = 1");
   if (rows[0]?.manual_override) return;
@@ -30,7 +25,6 @@ async function refreshComputedRootUnlessOverridden(): Promise<void> {
   );
 }
 
-// ── GET /api/whitelist?limit=1000 ───────────────────────────────────────────
 router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.view");
@@ -49,7 +43,6 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
   } catch (e) { next(e); }
 });
 
-// ── POST /api/whitelist/entry — add one address ─────────────────────────────
 router.post("/entry", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -58,10 +51,6 @@ router.post("/entry", async (req: Request, res: Response, next: NextFunction) =>
       res.status(422).json({ error: "Valid address required" });
       return;
     }
-    // customer_wallets has no unique constraint on address (confirmed against
-    // live schema -- only a PK on id), so this is an explicit check-then-
-    // write, matching the same pattern already used by wallet_connect() and
-    // customer_wallets_add() elsewhere in this schema, not an ON CONFLICT upsert.
     const lower = address.toLowerCase();
     const { rowCount } = await pool.query(
       "UPDATE customer_wallets SET is_whitelisted = TRUE WHERE lower(address) = $1",
@@ -78,7 +67,6 @@ router.post("/entry", async (req: Request, res: Response, next: NextFunction) =>
   } catch (e) { next(e); }
 });
 
-// ── POST /api/whitelist/add — bulk add ───────────────────────────────────────
 router.post("/add", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -93,8 +81,6 @@ router.post("/add", async (req: Request, res: Response, next: NextFunction) => {
       return;
     }
     const lowered = addresses.map(a => a.toLowerCase());
-    // Same no-unique-constraint reasoning as /entry above: mark existing rows
-    // whitelisted, then insert only the addresses that didn't already exist.
     const { rows: existing } = await pool.query(
       `UPDATE customer_wallets SET is_whitelisted = TRUE
        WHERE lower(address) = ANY($1::text[])
@@ -115,9 +101,6 @@ router.post("/add", async (req: Request, res: Response, next: NextFunction) => {
   } catch (e) { next(e); }
 });
 
-// ── DELETE /api/whitelist/merkle-root — clear manual override ───────────────
-// Registered BEFORE the "/:address" DELETE route below -- Express would
-// otherwise match this literal path as address="merkle-root".
 router.delete("/merkle-root", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -127,7 +110,6 @@ router.delete("/merkle-root", async (req: Request, res: Response, next: NextFunc
   } catch (e) { next(e); }
 });
 
-// ── DELETE /api/whitelist/:address — remove one address ─────────────────────
 router.delete("/:address", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -145,7 +127,6 @@ router.delete("/:address", async (req: Request, res: Response, next: NextFunctio
   } catch (e) { next(e); }
 });
 
-// ── PUT /api/whitelist/merkle-root — set manual override root ───────────────
 router.put("/merkle-root", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -162,7 +143,6 @@ router.put("/merkle-root", async (req: Request, res: Response, next: NextFunctio
   } catch (e) { next(e); }
 });
 
-// ── GET /api/whitelist/export?format=csv|json|txt ───────────────────────────
 router.get("/export", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.view");
@@ -183,13 +163,6 @@ router.get("/export", async (req: Request, res: Response, next: NextFunction) =>
   } catch (e) { next(e); }
 });
 
-// ── POST /api/whitelist/register — register a wallet + identity, then whitelist it ──
-// Judgment call: role_code isn't restricted to "customer" -- the Whitelist tab
-// lets an admin pick any role (e.g. ext_referrer), so this mirrors
-// customer_wallet_auto_register()'s user-creation shape (same seq_user_cu
-// code sequence/prefix, same users/customer_wallets link) but parameterized
-// by role and populated with the real name/email supplied, instead of always
-// stubbing "Customer"/"".
 router.post("/register", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -255,7 +228,6 @@ router.post("/register", async (req: Request, res: Response, next: NextFunction)
   } catch (e) { next(e); }
 });
 
-// ── POST /api/whitelist/push-chain — push the effective root on-chain ───────
 router.post("/push-chain", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -267,10 +239,6 @@ router.post("/push-chain", async (req: Request, res: Response, next: NextFunctio
   }
 });
 
-// ── POST /api/whitelist/test ──────────────────────────────────────────────────
-// Public — no auth. Called by Bearth-FE (src/lib/whitelist-proof.ts) before every
-// whitelistMint()/waveMint() to get the Merkle proof the contract needs. Response
-// shape (proof/root/is_whitelisted, snake_case) is fixed by that existing client.
 router.post("/test", testLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { address } = (req.body ?? {}) as { address?: string };
@@ -300,17 +268,6 @@ router.post("/test", testLimit, async (req: Request, res: Response, next: NextFu
   } catch (e) { next(e); }
 });
 
-// ── GET /api/whitelist/reconcile ──────────────────────────────────────────────
-// Self-healing check: compares the DB's intended Merkle root against the
-// last-confirmed on-chain root and re-pushes if they've drifted (see
-// customer-whitelist.service.ts's reconcileWhitelistRoot for why this exists
-// -- the 2026-09-09 incident where every whitelist mint silently reverted).
-// Intended to be hit by a scheduled job (vercel.json cron), not end users --
-// it can trigger a real on-chain transaction, so it's gated on CRON_SECRET.
-// GET, not POST: Vercel Cron Jobs always invoke via GET, so a POST-only
-// route here would just 404 against the scheduler. Vercel automatically
-// sends `Authorization: Bearer ${CRON_SECRET}` to cron-invoked routes when
-// that env var is set: https://vercel.com/docs/cron-jobs/manage-cron-jobs#securing-cron-jobs
 router.get("/reconcile", async (req: Request, res: Response, next: NextFunction) => {
   try {
     const expected = process.env.CRON_SECRET;

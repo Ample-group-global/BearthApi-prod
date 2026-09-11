@@ -4,8 +4,6 @@ import * as svc from "../../services/nft-gen.service";
 
 const router = Router();
 
-// Upload batch lifecycle
-
 router.get("/:id", async (req, res, next) => {
   try {
     requirePermission(req, "nft_gen.view");
@@ -52,8 +50,6 @@ router.post("/:id/fail", async (req, res, next) => {
     res.json(result);
   } catch (e) { next(e); }
 });
-
-// Item IPFS update
 
 router.patch("/items/:itemId/ipfs", async (req, res, next) => {
   try {

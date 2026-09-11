@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
-import pool from "../pool"; // patch_v38 added 2026-08-11
+import pool from "../pool";
 import { logger } from "../logger";
 
 const DB_DIR = join(__dirname, "../../db");
@@ -22,7 +22,6 @@ function listPatchFiles(): string[] {
 export async function runPendingMigrations(): Promise<void> {
   const client = await pool.connect();
   try {
-    // Detect whether schema_migrations already exists
     const { rows: exists } = await client.query<{ exists: boolean }>(`
       SELECT EXISTS (
         SELECT 1 FROM information_schema.tables
@@ -41,7 +40,6 @@ export async function runPendingMigrations(): Promise<void> {
     const patches = listPatchFiles();
 
     if (firstInit) {
-      // Existing DB: baseline all current patches as already applied so we
       const { rows: nftCheck } = await client.query<{ exists: boolean }>(`
         SELECT EXISTS (
           SELECT 1 FROM information_schema.tables
@@ -49,7 +47,6 @@ export async function runPendingMigrations(): Promise<void> {
         ) AS exists
       `);
       if (nftCheck[0].exists) {
-        // Existing DB — mark all patches as applied without running them
         for (const filename of patches) {
           await client.query(
             "INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING",
@@ -59,10 +56,8 @@ export async function runPendingMigrations(): Promise<void> {
         logger.info(`[migrate] Existing DB: baselined ${patches.length} patch(es) — none re-run`);
         return;
       }
-      // Fresh DB — fall through and apply all patches from scratch
     }
 
-    // Find unapplied patches
     const { rows: applied } = await client.query<{ filename: string }>(
       "SELECT filename FROM schema_migrations",
     );

@@ -84,8 +84,6 @@ export async function removeCustomerWallet(walletId: string) {
   return rows[0] ?? null;
 }
 
-// Cross-customer wallet view -- used for a "which wallets are already
-// registered" glance rather than drilling into each customer individually.
 export async function listAllCustomerWallets() {
   const { rows } = await pool.query(`
     SELECT

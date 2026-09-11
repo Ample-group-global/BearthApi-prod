@@ -1,10 +1,3 @@
--- Regression from patch_v04: nft_traits.rarity_weight is NUMERIC, but
--- nft_gen_traits_create_bulk's jsonb_to_recordset parsed the incoming
--- rarity_weight as `int`, so any fractional weight (e.g. an artist's Excel
--- weight of 2.78) crashed the whole bulk insert with "invalid input syntax
--- for type integer". The RETURNS TABLE type was corrected to numeric during
--- patch_v04 (matching the real column), but this internal parsing clause was
--- missed. Fixing it to numeric so it matches the column exactly.
 CREATE OR REPLACE FUNCTION public.nft_gen_traits_create_bulk(p_layer_id uuid, p_traits jsonb)
  RETURNS TABLE(id uuid, name character varying, rarity_weight numeric, rarity_tier character varying, created_at timestamp with time zone)
  LANGUAGE plpgsql

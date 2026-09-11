@@ -31,7 +31,6 @@ export interface NftActivityParams {
   details?:      Record<string, unknown>;
 }
 
-// Fire-and-forget: logging never blocks or throws in the calling code.
 export function logNftActivity(params: NftActivityParams): void {
   pool
     .query(
