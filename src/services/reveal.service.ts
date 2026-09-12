@@ -28,6 +28,92 @@ async function getCoordinatorContract(signer: ethers.Wallet, collectionId: strin
   return new ethers.Contract(addr, CoordinatorABI, signer);
 }
 
+// requestReveal() only needs OPERATOR_ROLE (FIXED_PRIVATE_KEY holds this),
+// but cancelStalePendingReveal() is DEFAULT_ADMIN_ROLE-gated on the
+// coordinator's own AccessControl -- confirmed live via hasRole() reads
+// that FIXED_PRIVATE_KEY's wallet does NOT hold that role on Test1's
+// coordinator, only the deploy wallet does. That key is already present
+// as DEPLOY_SEPOLIA_PRIVATE_KEY in this API's env (used today only for
+// per-collection contract deploys), so no new secret is needed.
+function getAdminGovernanceSigner(): ethers.Wallet {
+  const privateKey = process.env.DEPLOY_SEPOLIA_PRIVATE_KEY;
+  if (!privateKey) throw new Error("DEPLOY_SEPOLIA_PRIVATE_KEY required for admin-role contract actions");
+  return new ethers.Wallet(privateKey, getProvider());
+}
+
+export interface PendingRevealStatus {
+  isPending: boolean;
+  requestedAt: string | null;
+  readyAt: string | null;
+  isStale: boolean;
+  staleRequestTimeoutSeconds: number;
+}
+
+// A wave's reveal can get permanently stuck if the VRF request is accepted
+// on-chain but Chainlink's callback never arrives (subscription ran dry,
+// etc.) -- the coordinator then reverts every further requestReveal() call
+// for that wave with RevealPending, and the ONLY recovery is
+// cancelStalePendingReveal(), which itself requires a 24h wait. Surfacing
+// this status lets the Admin UI show a real countdown instead of a
+// confusing repeat failure with no explanation.
+export async function getPendingRevealStatus(waveNum: number, collectionId: string): Promise<PendingRevealStatus | null> {
+  const { rows } = await pool.query<{ contract_reveal_coordinator_address: string | null }>(
+    "SELECT contract_reveal_coordinator_address FROM nft_collections WHERE id = $1",
+    [collectionId],
+  );
+  const addr = rows[0]?.contract_reveal_coordinator_address;
+  if (!addr) return null;
+
+  const coordinator = new ethers.Contract(addr, CoordinatorABI, getProvider());
+  const [requestedAtRaw, timeoutRaw]: [bigint, bigint] = await Promise.all([
+    coordinator.pendingRequestedAt(waveNum),
+    coordinator.staleRequestTimeout(),
+  ]);
+  const requestedAtSec = Number(requestedAtRaw);
+  const timeoutSec = Number(timeoutRaw);
+  if (requestedAtSec === 0) {
+    return { isPending: false, requestedAt: null, readyAt: null, isStale: false, staleRequestTimeoutSeconds: timeoutSec };
+  }
+  const readyAtSec = requestedAtSec + timeoutSec;
+  return {
+    isPending: true,
+    requestedAt: new Date(requestedAtSec * 1000).toISOString(),
+    readyAt: new Date(readyAtSec * 1000).toISOString(),
+    isStale: Math.floor(Date.now() / 1000) >= readyAtSec,
+    staleRequestTimeoutSeconds: timeoutSec,
+  };
+}
+
+export async function cancelStalePendingReveal(waveNum: number, collectionId: string): Promise<string> {
+  const status = await getPendingRevealStatus(waveNum, collectionId);
+  if (!status || !status.isPending) throw new Error(`Wave ${waveNum}: no pending reveal request to cancel`);
+  if (!status.isStale) {
+    throw new Error(
+      `Wave ${waveNum}: reveal request is not yet eligible for cancellation -- ` +
+      `ready at ${status.readyAt}. This safety window protects against cancelling ` +
+      `a request that might still legitimately fulfill.`
+    );
+  }
+
+  const signer = getAdminGovernanceSigner();
+  const coordinator = await getCoordinatorContract(signer, collectionId);
+  if (!coordinator) throw new Error(`Wave ${waveNum}: collection has no reveal coordinator configured`);
+
+  const tx = await (coordinator.cancelStalePendingReveal as (n: number) => Promise<ethers.TransactionResponse>)(waveNum);
+  const receipt = await tx.wait(1);
+  if (!receipt) throw new Error(`No receipt for cancelStalePendingReveal(${waveNum})`);
+
+  // Clear the stale request bookkeeping so the normal "Reveal Now" flow
+  // shows this wave as ready to retry again, not still "pending."
+  await pool.query(
+    `UPDATE nft_waves SET vrf_request_id = NULL, vrf_requested_at = NULL, updated_at = NOW()
+     WHERE wave_number = $1 AND collection_id = $2`,
+    [waveNum, collectionId],
+  );
+
+  return receipt.hash;
+}
+
 export async function executeWaveReveal(waveNum: number, collectionId: string): Promise<string | null> {
   const { rows: waveRows } = await pool.query<{
     id: string;

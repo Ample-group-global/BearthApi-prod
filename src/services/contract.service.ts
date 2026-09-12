@@ -92,14 +92,13 @@ const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   WalletBlocked: "This wallet has been blocked from minting",
   InvalidQuantity: "Invalid quantity  must be at least 1",
   TokenAlreadyMinted: "Token has already been minted",
-  WrongPhase: "This action is not available in the current phase",
   InvalidPhase: "Cannot move to an earlier phase",
+  WaveOffsetMismatch: "Wave reveal offset does not match the expected value",
   ZeroAddress: "Address cannot be zero",
   InvalidTime: "Invalid time  end must be after start and in the future",
   InvalidURI: "Invalid URI  must not be empty",
   InvalidRarityTier: "Invalid rarity tier  must be 1 (Common) to 4 (Legendary)",
   InvalidRoyaltyParams: "Invalid royalty  receiver cannot be zero and BPS must be 0–1000",
-  ArrayLengthMismatch: "Array length mismatch between tokenIds and values",
   TokenDoesNotExist: "Token does not exist",
   InvalidEmergencyTransfer: "Invalid emergency transfer parameters",
   TransferNotAllowed: "Transfer not allowed  SBT mode is on or account is blocked",
@@ -307,6 +306,29 @@ async function syncEvent(
         break;
       }
 
+      case "BlindBoxURIUpdated": {
+        const [uri] = args as [string];
+        await pool.query("UPDATE nft_collections SET blind_box_uri=$1, updated_at=NOW() WHERE id=$2", [uri, collectionId]);
+        break;
+      }
+
+      case "RevealCoordinatorUpdated": {
+        const [coordinator] = args as [string];
+        await pool.query("UPDATE nft_collections SET contract_reveal_coordinator_address=$1, updated_at=NOW() WHERE id=$2", [coordinator, collectionId]);
+        break;
+      }
+
+      // No per-collection DB column exists yet for these -- logged to
+      // nft_event_log above (audit trail) but no further state write.
+      // TreasuryWalletUpdated: nft_collections has no treasury_wallet column
+      // (only the legacy singleton nft_collection_config does); AllowlistRootUpdated
+      // is already tracked as "what we pushed" in whitelist_state, this event is
+      // just an on-chain echo of that; TokenRarityUpdated/Withdrawn have no
+      // corresponding per-collection tracking table today.
+      case "TreasuryWalletUpdated":
+      case "AllowlistRootUpdated":
+      case "TokenRarityUpdated":
+      case "Withdrawn":
       case "Bred":
       case "TransferValidatorUpdated":
       case "Paused":
@@ -355,6 +377,8 @@ const WATCHED_EVENTS = [
   "PhaseChanged", "PurchaseLimitChanged", "VIPStatusChanged",
   "WaveClosedTreasury", "RoyaltyUpdated", "SBTChanged", "TokenSBTChanged", "Transfer",
   "TransferValidatorUpdated", "Paused", "Unpaused",
+  "BlindBoxURIUpdated", "RevealCoordinatorUpdated", "TreasuryWalletUpdated",
+  "AllowlistRootUpdated", "TokenRarityUpdated", "Withdrawn",
 ];
 
 function attachListenersFor(contract: Contract, label: string): number {
@@ -542,16 +566,13 @@ export async function contractSetWavePrice(
 
 export async function contractTreasuryClose(
   waveNum: number,
-  recipient: string | null,
   collectionId: string
 ): Promise<ethers.TransactionReceipt> {
   if (waveNum < 1 || waveNum > 7) throw new Error("Wave number must be 1–7");
-  let to = recipient;
-  if (!to) {
-    to = await (await getContractReadOnlyForCollection(collectionId)).treasuryWallet() as string;
-  }
-  if (!ethers.isAddress(to)) throw new Error("Invalid recipient address");
-  return callContract("treasuryClose", [waveNum, to], {}, collectionId);
+  // treasuryClose() hardened 2026-09-11 to hardcode its destination to the
+  // contract's own treasuryWallet (closing an arbitrary-destination risk) --
+  // it no longer takes a recipient argument at all.
+  return callContract("treasuryClose", [waveNum], {}, collectionId);
 }
 
 export async function contractSetRoyalty(

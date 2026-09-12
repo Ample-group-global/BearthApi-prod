@@ -14,7 +14,7 @@ import {
   resolveCollectionContractAddress,
 } from "../../services/contract.service";
 import { getProvider } from "../../utils/contract-factory";
-import { executeWaveReveal, _syncRevealedMetadata, _updateWaveRevealedInDB } from "../../services/reveal.service";
+import { executeWaveReveal, _syncRevealedMetadata, _updateWaveRevealedInDB, getPendingRevealStatus, cancelStalePendingReveal } from "../../services/reveal.service";
 import { buildMerkleTree } from "../../merkle";
 import { requirePermission } from "../../adminAuth";
 
@@ -338,7 +338,7 @@ router.post("/:num/reveal", async (req, res, next) => {
     let autoTreasuryError: string | null = null;
     if (stratRows[0]?.unsold_strategy === 'auto_treasury') {
       try {
-        const receipt = await contractTreasuryClose(num, null, collectionId);
+        const receipt = await contractTreasuryClose(num, collectionId);
         autoTreasuryTxHash = receipt.hash;
         const { rows: unsyncedRows } = await pool.query(
           `SELECT COUNT(*) AS cnt FROM nft_records nr
@@ -390,6 +390,44 @@ router.post("/:num/reveal", async (req, res, next) => {
     // on-chain and did succeed, but a failed treasury sweep of unsold
     // tokens must not be silently swallowed to a server log only.
     res.json({ ok: true, txHash, devOnly: txHash === null, waveNumber: num, autoTreasuryTxHash, autoTreasuryError });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// If a reveal's VRF request is accepted on-chain but Chainlink's callback
+// never arrives (subscription issue, etc.), the coordinator contract
+// permanently blocks any further reveal attempts for that wave until
+// cancelStalePendingReveal() runs -- and that has a mandatory 24h wait.
+// This lets the Admin UI show real status/countdown instead of a repeat
+// "RevealPending" failure with no explanation.
+router.get("/:num/reveal-status", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_waves.manage");
+    const num = parseInt(req.params.num, 10);
+    if (isNaN(num) || num < 1 || num > 7)
+      return res.status(400).json({ error: "Wave number must be 1–7" });
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+
+    const status = await getPendingRevealStatus(num, collectionId);
+    res.json(status ?? { isPending: false, requestedAt: null, readyAt: null, isStale: false, staleRequestTimeoutSeconds: null });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post("/:num/cancel-stale-reveal", async (req, res, next) => {
+  try {
+    requirePermission(req, "nft_waves.manage");
+    const num = parseInt(req.params.num, 10);
+    if (isNaN(num) || num < 1 || num > 7)
+      return res.status(400).json({ error: "Wave number must be 1–7" });
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+
+    const txHash = await cancelStalePendingReveal(num, collectionId);
+    res.json({ ok: true, txHash, waveNumber: num });
   } catch (err) {
     next(err);
   }
@@ -504,17 +542,18 @@ router.get("/:num/treasury-close-estimate", async (req, res, next) => {
     const signer = new ethers.Wallet(privateKey, provider);
     const contractRO = await getContractReadOnlyForCollection(collectionId);
 
-    const [balanceWei, feeData, treasuryAddr] = await Promise.all([
+    const [balanceWei, feeData] = await Promise.all([
       provider.getBalance(signer.address),
       provider.getFeeData(),
-      contractRO.treasuryWallet() as Promise<string>,
     ]);
 
     const gasPrice = feeData.gasPrice ?? BigInt(2_000_000_000);
 
     let estimatedGasWei = BigInt(300_000) * gasPrice;
     try {
-      const gasUnits = await contractRO.treasuryClose.estimateGas(num, treasuryAddr, { from: signer.address });
+      // treasuryClose() hardened 2026-09-11 to take only waveNum -- the
+      // recipient is hardcoded internally to treasuryWallet.
+      const gasUnits = await contractRO.treasuryClose.estimateGas(num, { from: signer.address });
       estimatedGasWei = gasUnits * gasPrice;
     } catch {
     }
@@ -580,7 +619,7 @@ router.post("/:num/treasury-close", async (req, res, next) => {
     }
 
     if (!alreadyClosedOnChain) {
-      const receipt = await contractTreasuryClose(num, null, collectionId);
+      const receipt = await contractTreasuryClose(num, collectionId);
       txHash = receipt.hash;
     }
 

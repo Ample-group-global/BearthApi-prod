@@ -1,237 +1,985 @@
 [
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "address",
-                           "name":  "nftAddress",
-                           "type":  "address"
-                       }
-                   ],
-        "stateMutability":  "nonpayable",
-        "type":  "constructor"
-    },
-    {
-        "inputs":  [
-
-                   ],
-        "name":  "InvalidURI",
-        "type":  "error"
-    },
-    {
-        "inputs":  [
-
-                   ],
-        "name":  "NotOwner",
-        "type":  "error"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "waveNum",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "RandomnessAlreadySet",
-        "type":  "error"
-    },
-    {
-        "anonymous":  false,
-        "inputs":  [
-                       {
-                           "indexed":  true,
-                           "internalType":  "uint256",
-                           "name":  "waveNum",
-                           "type":  "uint256"
-                       },
-                       {
-                           "indexed":  true,
-                           "internalType":  "uint256",
-                           "name":  "requestId",
-                           "type":  "uint256"
-                       },
-                       {
-                           "indexed":  false,
-                           "internalType":  "uint256",
-                           "name":  "startingIndex",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "RandomnessFulfilled",
-        "type":  "event"
-    },
-    {
-        "anonymous":  false,
-        "inputs":  [
-                       {
-                           "indexed":  true,
-                           "internalType":  "uint256",
-                           "name":  "waveNum",
-                           "type":  "uint256"
-                       },
-                       {
-                           "indexed":  true,
-                           "internalType":  "uint256",
-                           "name":  "requestId",
-                           "type":  "uint256"
-                       },
-                       {
-                           "indexed":  false,
-                           "internalType":  "bytes32",
-                           "name":  "provenanceHash",
-                           "type":  "bytes32"
-                       }
-                   ],
-        "name":  "RevealRequested",
-        "type":  "event"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "waveNum",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "getWaveStartingIndex",
-        "outputs":  [
-                        {
-                            "internalType":  "uint256",
-                            "name":  "",
-                            "type":  "uint256"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "waveNum",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "isRandomnessSet",
-        "outputs":  [
-                        {
-                            "internalType":  "bool",
-                            "name":  "",
-                            "type":  "bool"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-
-                   ],
-        "name":  "nft",
-        "outputs":  [
-                        {
-                            "internalType":  "address",
-                            "name":  "",
-                            "type":  "address"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-
-                   ],
-        "name":  "owner",
-        "outputs":  [
-                        {
-                            "internalType":  "address",
-                            "name":  "",
-                            "type":  "address"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "randomnessSet",
-        "outputs":  [
-                        {
-                            "internalType":  "bool",
-                            "name":  "",
-                            "type":  "bool"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "waveNum",
-                           "type":  "uint256"
-                       },
-                       {
-                           "internalType":  "string",
-                           "name":  "uri",
-                           "type":  "string"
-                       }
-                   ],
-        "name":  "requestReveal",
-        "outputs":  [
-                        {
-                            "internalType":  "uint256",
-                            "name":  "requestId",
-                            "type":  "uint256"
-                        }
-                    ],
-        "stateMutability":  "nonpayable",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "waveProvenanceHash",
-        "outputs":  [
-                        {
-                            "internalType":  "bytes32",
-                            "name":  "",
-                            "type":  "bytes32"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    },
-    {
-        "inputs":  [
-                       {
-                           "internalType":  "uint256",
-                           "name":  "",
-                           "type":  "uint256"
-                       }
-                   ],
-        "name":  "waveStartingIndex",
-        "outputs":  [
-                        {
-                            "internalType":  "uint256",
-                            "name":  "",
-                            "type":  "uint256"
-                        }
-                    ],
-        "stateMutability":  "view",
-        "type":  "function"
-    }
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "vrfCoordinator",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "nftAddress",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "admin",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "operator",
+        "type": "address"
+      },
+      {
+        "internalType": "uint256",
+        "name": "subId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "kh",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "constructor"
+  },
+  {
+    "inputs": [],
+    "name": "AccessControlBadConfirmation",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      },
+      {
+        "internalType": "bytes32",
+        "name": "neededRole",
+        "type": "bytes32"
+      }
+    ],
+    "name": "AccessControlUnauthorizedAccount",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidURI",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "InvalidWave",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      }
+    ],
+    "name": "NoPendingRequest",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "have",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "want",
+        "type": "address"
+      }
+    ],
+    "name": "OnlyCoordinatorCanFulfill",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "have",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "owner",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
+        "name": "coordinator",
+        "type": "address"
+      }
+    ],
+    "name": "OnlyOwnerOrCoordinator",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      }
+    ],
+    "name": "RandomnessAlreadySet",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ReentrancyGuardReentrantCall",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "readyAt",
+        "type": "uint256"
+      }
+    ],
+    "name": "RequestNotYetStale",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      }
+    ],
+    "name": "RevealPending",
+    "type": "error"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "requestId",
+        "type": "uint256"
+      }
+    ],
+    "name": "UnknownRequest",
+    "type": "error"
+  },
+  {
+    "inputs": [],
+    "name": "ZeroAddress",
+    "type": "error"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "oldLimit",
+        "type": "uint32"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint32",
+        "name": "newLimit",
+        "type": "uint32"
+      }
+    ],
+    "name": "CallbackGasLimitUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "address",
+        "name": "vrfCoordinator",
+        "type": "address"
+      }
+    ],
+    "name": "CoordinatorSet",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "oldKeyHash",
+        "type": "bytes32"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "newKeyHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "KeyHashUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "from",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "OwnershipTransferRequested",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "from",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "OwnershipTransferred",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "requestId",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "cancelledBy",
+        "type": "address"
+      }
+    ],
+    "name": "PendingRevealCancelled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "requestId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "startingIndex",
+        "type": "uint256"
+      }
+    ],
+    "name": "RandomnessFulfilled",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint16",
+        "name": "oldConfs",
+        "type": "uint16"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint16",
+        "name": "newConfs",
+        "type": "uint16"
+      }
+    ],
+    "name": "RequestConfirmationsUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "requestId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "provenanceHash",
+        "type": "bytes32"
+      }
+    ],
+    "name": "RevealRequested",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "previousAdminRole",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "newAdminRole",
+        "type": "bytes32"
+      }
+    ],
+    "name": "RoleAdminChanged",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      }
+    ],
+    "name": "RoleGranted",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      },
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "sender",
+        "type": "address"
+      }
+    ],
+    "name": "RoleRevoked",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "oldTimeout",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newTimeout",
+        "type": "uint256"
+      }
+    ],
+    "name": "StaleRequestTimeoutUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "oldId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "newId",
+        "type": "uint256"
+      }
+    ],
+    "name": "SubscriptionIdUpdated",
+    "type": "event"
+  },
+  {
+    "inputs": [],
+    "name": "DEFAULT_ADMIN_ROLE",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "OPERATOR_ROLE",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "acceptOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "callbackGasLimit",
+    "outputs": [
+      {
+        "internalType": "uint32",
+        "name": "",
+        "type": "uint32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      }
+    ],
+    "name": "cancelStalePendingReveal",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      }
+    ],
+    "name": "getRoleAdmin",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      }
+    ],
+    "name": "getWaveStartingIndex",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "grantRole",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "hasRole",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      }
+    ],
+    "name": "isRandomnessSet",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "keyHash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "nft",
+    "outputs": [
+      {
+        "internalType": "contract IBearthNFT",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "owner",
+    "outputs": [
+      {
+        "internalType": "address",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "pendingRequestedAt",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "randomnessSet",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "requestId",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256[]",
+        "name": "randomWords",
+        "type": "uint256[]"
+      }
+    ],
+    "name": "rawFulfillRandomWords",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "callerConfirmation",
+        "type": "address"
+      }
+    ],
+    "name": "renounceRole",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "requestConfirmations",
+    "outputs": [
+      {
+        "internalType": "uint16",
+        "name": "",
+        "type": "uint16"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "string",
+        "name": "uri",
+        "type": "string"
+      }
+    ],
+    "name": "requestReveal",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "requestId",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "role",
+        "type": "bytes32"
+      },
+      {
+        "internalType": "address",
+        "name": "account",
+        "type": "address"
+      }
+    ],
+    "name": "revokeRole",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "s_vrfCoordinator",
+    "outputs": [
+      {
+        "internalType": "contract IVRFCoordinatorV2Plus",
+        "name": "",
+        "type": "address"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint32",
+        "name": "limit",
+        "type": "uint32"
+      }
+    ],
+    "name": "setCallbackGasLimit",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "_vrfCoordinator",
+        "type": "address"
+      }
+    ],
+    "name": "setCoordinator",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes32",
+        "name": "kh",
+        "type": "bytes32"
+      }
+    ],
+    "name": "setKeyHash",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint16",
+        "name": "confs",
+        "type": "uint16"
+      }
+    ],
+    "name": "setRequestConfirmations",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "newTimeout",
+        "type": "uint256"
+      }
+    ],
+    "name": "setStaleRequestTimeout",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "id",
+        "type": "uint256"
+      }
+    ],
+    "name": "setSubscriptionId",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "staleRequestTimeout",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "subscriptionId",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "bytes4",
+        "name": "interfaceId",
+        "type": "bytes4"
+      }
+    ],
+    "name": "supportsInterface",
+    "outputs": [
+      {
+        "internalType": "bool",
+        "name": "",
+        "type": "bool"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "address",
+        "name": "to",
+        "type": "address"
+      }
+    ],
+    "name": "transferOwnership",
+    "outputs": [],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "waveProvenanceHash",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "name": "waveStartingIndex",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  }
 ]
