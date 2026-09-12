@@ -53,11 +53,6 @@
   },
   {
     "inputs": [],
-    "name": "ArrayLengthMismatch",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "BalanceQueryForZeroAddress",
     "type": "error"
   },
@@ -389,6 +384,11 @@
   },
   {
     "inputs": [],
+    "name": "WaveOffsetMismatch",
+    "type": "error"
+  },
+  {
+    "inputs": [],
     "name": "WavePriceLocked",
     "type": "error"
   },
@@ -414,11 +414,6 @@
   },
   {
     "inputs": [],
-    "name": "WrongPhase",
-    "type": "error"
-  },
-  {
-    "inputs": [],
     "name": "ZeroAddress",
     "type": "error"
   },
@@ -439,6 +434,19 @@
       }
     ],
     "name": "AccountBlocked",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "bytes32",
+        "name": "newRoot",
+        "type": "bytes32"
+      }
+    ],
+    "name": "AllowlistRootUpdated",
     "type": "event"
   },
   {
@@ -508,6 +516,19 @@
       }
     ],
     "name": "BatchMetadataUpdate",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "newUri",
+        "type": "string"
+      }
+    ],
+    "name": "BlindBoxURIUpdated",
     "type": "event"
   },
   {
@@ -703,6 +724,19 @@
     "inputs": [
       {
         "indexed": true,
+        "internalType": "address",
+        "name": "newCoordinator",
+        "type": "address"
+      }
+    ],
+    "name": "RevealCoordinatorUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
         "internalType": "bytes32",
         "name": "role",
         "type": "bytes32"
@@ -816,6 +850,25 @@
       },
       {
         "indexed": false,
+        "internalType": "uint8",
+        "name": "rarity",
+        "type": "uint8"
+      }
+    ],
+    "name": "TokenRarityUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "tokenId",
+        "type": "uint256"
+      },
+      {
+        "indexed": false,
         "internalType": "bool",
         "name": "enabled",
         "type": "bool"
@@ -866,6 +919,19 @@
       }
     ],
     "name": "TransferValidatorUpdated",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": true,
+        "internalType": "address",
+        "name": "newWallet",
+        "type": "address"
+      }
+    ],
+    "name": "TreasuryWalletUpdated",
     "type": "event"
   },
   {
@@ -1033,17 +1099,23 @@
     "type": "event"
   },
   {
-    "inputs": [],
-    "name": "BREEDER_ROLE",
-    "outputs": [
+    "anonymous": false,
+    "inputs": [
       {
-        "internalType": "bytes32",
-        "name": "",
-        "type": "bytes32"
+        "indexed": true,
+        "internalType": "address",
+        "name": "treasuryWallet",
+        "type": "address"
+      },
+      {
+        "indexed": false,
+        "internalType": "uint256",
+        "name": "amount",
+        "type": "uint256"
       }
     ],
-    "stateMutability": "view",
-    "type": "function"
+    "name": "Withdrawn",
+    "type": "event"
   },
   {
     "inputs": [],
@@ -1100,6 +1172,19 @@
   {
     "inputs": [],
     "name": "REVEAL_ROLE",
+    "outputs": [
+      {
+        "internalType": "bytes32",
+        "name": "",
+        "type": "bytes32"
+      }
+    ],
+    "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [],
+    "name": "TREASURY_TIMELOCK_ROLE",
     "outputs": [
       {
         "internalType": "bytes32",
@@ -1355,25 +1440,6 @@
         "type": "uint256"
       }
     ],
-    "name": "getSeries",
-    "outputs": [
-      {
-        "internalType": "uint256",
-        "name": "",
-        "type": "uint256"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "tokenId",
-        "type": "uint256"
-      }
-    ],
     "name": "getTokenWave",
     "outputs": [
       {
@@ -1487,6 +1553,11 @@
       },
       {
         "internalType": "address",
+        "name": "emergencyWallet",
+        "type": "address"
+      },
+      {
+        "internalType": "address",
         "name": "treasury_",
         "type": "address"
       },
@@ -1494,6 +1565,11 @@
         "internalType": "address",
         "name": "initialTransferValidator",
         "type": "address"
+      },
+      {
+        "internalType": "uint256[7]",
+        "name": "waveQtys_",
+        "type": "uint256[7]"
       }
     ],
     "name": "initialize",
@@ -1515,25 +1591,6 @@
       }
     ],
     "name": "isApprovedForAll",
-    "outputs": [
-      {
-        "internalType": "bool",
-        "name": "",
-        "type": "bool"
-      }
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "tokenId",
-        "type": "uint256"
-      }
-    ],
-    "name": "isGenesis",
     "outputs": [
       {
         "internalType": "bool",
@@ -1573,7 +1630,7 @@
         "type": "uint256"
       }
     ],
-    "stateMutability": "pure",
+    "stateMutability": "view",
     "type": "function"
   },
   {
@@ -1665,29 +1722,6 @@
       }
     ],
     "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {
-        "internalType": "uint256",
-        "name": "waveNum",
-        "type": "uint256"
-      },
-      {
-        "internalType": "uint256",
-        "name": "qty",
-        "type": "uint256"
-      },
-      {
-        "internalType": "bytes32[]",
-        "name": "proof",
-        "type": "bytes32[]"
-      }
-    ],
-    "name": "waveMint",
-    "outputs": [],
-    "stateMutability": "payable",
     "type": "function"
   },
   {
@@ -2325,11 +2359,6 @@
         "internalType": "uint256",
         "name": "waveNum",
         "type": "uint256"
-      },
-      {
-        "internalType": "address",
-        "name": "recipient",
-        "type": "address"
       }
     ],
     "name": "treasuryClose",
@@ -2430,6 +2459,29 @@
       }
     ],
     "stateMutability": "view",
+    "type": "function"
+  },
+  {
+    "inputs": [
+      {
+        "internalType": "uint256",
+        "name": "waveNum",
+        "type": "uint256"
+      },
+      {
+        "internalType": "uint256",
+        "name": "qty",
+        "type": "uint256"
+      },
+      {
+        "internalType": "bytes32[]",
+        "name": "proof",
+        "type": "bytes32[]"
+      }
+    ],
+    "name": "waveMint",
+    "outputs": [],
+    "stateMutability": "payable",
     "type": "function"
   },
   {
