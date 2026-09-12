@@ -95,31 +95,6 @@ router.put("/:id", requireAdmin, async (req, res, next) => {
   } catch (e) { next(e); }
 });
 
-router.post("/trait-stats", requireAdmin, async (req, res, next) => {
-  try {
-    const { traits } = req.body ?? {};
-    if (!traits || typeof traits !== "object" || Array.isArray(traits)) {
-      res.status(400).json({ error: "traits object required" }); return;
-    }
-    const entries = Object.entries(traits as Record<string, string>);
-    if (!entries.length) { res.json({ total: 0, stats: {} }); return; }
-
-    const { rows: [{ total }] } = await pool.query<{ total: string }>(
-      "SELECT COUNT(*) AS total FROM nft_records",
-    );
-    const stats: Record<string, Record<string, number>> = {};
-    await Promise.all(entries.map(async ([layer, value]) => {
-      const { rows } = await pool.query<{ count: string }>(
-        `SELECT COUNT(*) FROM nft_records WHERE traits @> $1::jsonb`,
-        [JSON.stringify({ [layer]: value })],
-      );
-      if (!stats[layer]) stats[layer] = {};
-      stats[layer][value] = Number(rows[0].count);
-    }));
-    res.json({ total: Number(total), stats });
-  } catch (e) { next(e); }
-});
-
 router.post("/:id/confirm-delivery", requireAdmin, async (req, res, next) => {
   try {
     const { deliveryStatusId } = req.body ?? {};
