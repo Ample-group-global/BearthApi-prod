@@ -123,7 +123,18 @@ export function getProvider(): ethers.JsonRpcProvider {
   if (!_provider) {
     const rpcUrl = process.env.ETH_RPC_URL;
     if (!rpcUrl) throw new Error("ETH_RPC_URL env var is required");
-    _provider = new ResilientJsonRpcProvider(rpcUrl, undefined, { polling: true, pollingInterval: 60_000 });
+    // ethers' live contract.on() event listener is entirely driven by this
+    // provider's own block-polling cadence: PollingEventSubscriber only
+    // checks eth_getLogs when a new "block" event fires, which itself only
+    // fires once per pollingInterval. At 60s, a mint sitting between polls
+    // could take up to a minute to sync -- and if that poll cycle's own
+    // eth_blockNumber call gets rate-limited/delayed, it can silently take
+    // much longer. Found live 2026-09-12: a real Wave 3 mint stayed
+    // unsynced for 2+ minutes on a fresh server restart, ruling out RPC
+    // contention as the (sole) cause. 8s keeps the live listener responsive
+    // without materially increasing request volume (still one lightweight
+    // eth_blockNumber call per interval).
+    _provider = new ResilientJsonRpcProvider(rpcUrl, undefined, { polling: true, pollingInterval: 8_000 });
     _provider.on("error", (err: Error) => {
       logger.warn("[provider] RPC error", err);
     });
