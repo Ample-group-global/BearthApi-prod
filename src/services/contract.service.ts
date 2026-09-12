@@ -369,7 +369,20 @@ function attachListenersFor(contract: Contract, label: string): number {
     if (!abiEventNames.has(eventName)) continue;
     try {
       contract.on(eventName, async (...rawArgs: unknown[]) => {
-        const ev = rawArgs[rawArgs.length - 1] as EventLog;
+        // ethers v6 passes a ContractEventPayload as the final callback arg,
+        // not a flat EventLog -- the real tx hash/block/index live nested at
+        // payload.log.*, not on the payload itself. Reading them off the
+        // payload directly silently produced txHash=null for every live
+        // event, which skipped the nft_event_log insert entirely (syncEvent
+        // only writes/dedupes when txHash is truthy) while the switch-case
+        // below still ran with a null txHash. This is why live mints/pauses
+        // never appeared to sync in real time: the actual sync path this
+        // whole time was the periodic resyncFromBlock() backfill (see
+        // routes/nft-sell/waves.ts), not this listener. Found live 2026-09-12
+        // by dumping the payload's own keys (filter/emitter/log/args/fragment
+        // -- no transactionHash/blockNumber at the top level).
+        const payload = rawArgs[rawArgs.length - 1] as EventLog & { log?: EventLog };
+        const ev = payload.log ?? payload;
         const args = rawArgs.slice(0, -1);
         await syncEvent(eventName, args, ev.transactionHash ?? null, ev.blockNumber, ev.index, String(contract.target));
       });

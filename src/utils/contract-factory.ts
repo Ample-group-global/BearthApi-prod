@@ -123,17 +123,16 @@ export function getProvider(): ethers.JsonRpcProvider {
   if (!_provider) {
     const rpcUrl = process.env.ETH_RPC_URL;
     if (!rpcUrl) throw new Error("ETH_RPC_URL env var is required");
-    // ethers' live contract.on() event listener is entirely driven by this
-    // provider's own block-polling cadence: PollingEventSubscriber only
-    // checks eth_getLogs when a new "block" event fires, which itself only
-    // fires once per pollingInterval. At 60s, a mint sitting between polls
-    // could take up to a minute to sync -- and if that poll cycle's own
-    // eth_blockNumber call gets rate-limited/delayed, it can silently take
-    // much longer. Found live 2026-09-12: a real Wave 3 mint stayed
-    // unsynced for 2+ minutes on a fresh server restart, ruling out RPC
-    // contention as the (sole) cause. 8s keeps the live listener responsive
+    // ethers' live contract.on() event listener is driven by this provider's
+    // own block-polling cadence -- PollingEventSubscriber only checks
+    // eth_getLogs when a new "block" event fires, which itself only fires
+    // once per pollingInterval. 8s (vs the 60s default) keeps it responsive
     // without materially increasing request volume (still one lightweight
-    // eth_blockNumber call per interval).
+    // eth_blockNumber call per interval). Note: this alone did NOT fix live
+    // sync -- the real bug was in contract.service.ts's attachListenersFor
+    // reading txHash/blockNumber off the wrong object shape (see comment
+    // there). Keeping the faster interval anyway since it's a genuine, if
+    // minor, improvement now that the real bug is fixed.
     _provider = new ResilientJsonRpcProvider(rpcUrl, undefined, { polling: true, pollingInterval: 8_000 });
     _provider.on("error", (err: Error) => {
       logger.warn("[provider] RPC error", err);
