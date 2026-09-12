@@ -3,32 +3,31 @@ import { buildMerkleTree } from "../merkle";
 import { contractSetAllowlistRoot } from "./contract.service";
 import { keepAlive } from "../utils/taskProgress";
 
-async function rebuildMerkleAndPush(collectionId?: string): Promise<void> {
-  const { rows } = await pool.query("SELECT * FROM whitelist_addresses_all()");
+async function rebuildMerkleAndPush(collectionId: string): Promise<void> {
+  const { rows } = await pool.query("SELECT * FROM whitelist_addresses_for_collection($1)", [collectionId]);
   const addresses = rows.map((r: { address: string }) => r.address);
   if (!addresses.length) return;
   const { root } = buildMerkleTree(addresses);
-  await pool.query("SELECT whitelist_state_update_root($1)", [root]);
+  await pool.query("SELECT whitelist_state_update_root($1, $2)", [collectionId, root]);
   try {
     await contractSetAllowlistRoot(root, collectionId);
-    await pool.query("SELECT whitelist_state_record_push_attempt($1, true, NULL)", [root]);
+    await pool.query("SELECT whitelist_state_record_push_attempt($1, $2, true, NULL)", [collectionId, root]);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await pool.query(
-      "SELECT whitelist_state_record_push_attempt($1, false, $2)",
-      [root, message],
+      "SELECT whitelist_state_record_push_attempt($1, $2, false, $3)",
+      [collectionId, root, message],
     );
     throw err;
   }
 }
 
-// collectionId is optional and, when omitted, falls back to the legacy
-// single-contract env var (CONTRACT_ADDRESS) via callContract() -- this
-// whitelist roster is still global, not per-collection (that redesign is
-// tracked separately), but callers that DO know which collection's
-// contract needs the root pushed can now say so instead of silently
-// hitting whatever CONTRACT_ADDRESS happens to point at.
-export function triggerChainSync(collectionId?: string): void {
+// The whitelist roster and its merkle-root/push-status tracking are both
+// genuinely per-collection now (nft_collection_whitelist, whitelist_state
+// keyed by collection_id) -- collectionId is required everywhere in this
+// file so a caller can never accidentally push one collection's root onto
+// another's contract.
+export function triggerChainSync(collectionId: string): void {
   keepAlive(
     rebuildMerkleAndPush(collectionId).catch(err => {
       console.error(
@@ -48,9 +47,9 @@ export interface ReconcileResult {
   error?: string;
 }
 
-export async function reconcileWhitelistRoot(): Promise<ReconcileResult> {
+export async function reconcileWhitelistRoot(collectionId: string): Promise<ReconcileResult> {
   const checkedAt = new Date().toISOString();
-  const { rows } = await pool.query("SELECT * FROM v_whitelist_sync_status");
+  const { rows } = await pool.query("SELECT * FROM whitelist_sync_status_for_collection($1)", [collectionId]);
   const status = rows[0] as
     | { merkle_root: string | null; onchain_root: string | null; in_sync: boolean }
     | undefined;
@@ -66,7 +65,7 @@ export async function reconcileWhitelistRoot(): Promise<ReconcileResult> {
   }
 
   try {
-    await rebuildMerkleAndPush();
+    await rebuildMerkleAndPush(collectionId);
     return {
       checkedAt,
       wasInSync: false,
@@ -91,9 +90,10 @@ export interface PushChainResult {
   txHash: string;
 }
 
-export async function pushEffectiveRootOnChain(collectionId?: string): Promise<PushChainResult> {
+export async function pushEffectiveRootOnChain(collectionId: string): Promise<PushChainResult> {
   const { rows } = await pool.query(
-    "SELECT merkle_root, manual_override FROM whitelist_state WHERE id = 1"
+    "SELECT merkle_root, manual_override FROM whitelist_state WHERE collection_id = $1",
+    [collectionId],
   );
   const state = rows[0] as { merkle_root: string | null; manual_override: boolean } | undefined;
 
@@ -101,24 +101,32 @@ export async function pushEffectiveRootOnChain(collectionId?: string): Promise<P
   if (state?.manual_override && state.merkle_root) {
     root = state.merkle_root;
   } else {
-    const { rows: addrRows } = await pool.query("SELECT * FROM whitelist_addresses_all()");
+    const { rows: addrRows } = await pool.query("SELECT * FROM whitelist_addresses_for_collection($1)", [collectionId]);
     const addresses = addrRows.map((r: { address: string }) => r.address);
     if (!addresses.length) throw new Error("No whitelisted addresses to push");
     root = buildMerkleTree(addresses).root;
-    await pool.query("SELECT whitelist_state_update_root($1)", [root]);
+    await pool.query("SELECT whitelist_state_update_root($1, $2)", [collectionId, root]);
   }
 
   try {
     const receipt = await contractSetAllowlistRoot(root, collectionId);
-    await pool.query("SELECT whitelist_state_record_push_attempt($1, true, NULL)", [root]);
+    await pool.query("SELECT whitelist_state_record_push_attempt($1, $2, true, NULL)", [collectionId, root]);
     return { root, txHash: receipt.hash };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    await pool.query("SELECT whitelist_state_record_push_attempt($1, false, $2)", [root, message]);
+    await pool.query("SELECT whitelist_state_record_push_attempt($1, $2, false, $3)", [collectionId, root, message]);
     throw err;
   }
 }
 
+// collectionId is optional here specifically because the customer-facing
+// wallet-connect flow (Bearth-FE) has no concept of "which collection" at
+// all -- it only ever sends a raw address. Registering the wallet's identity
+// doesn't need a collection; pushing a merkle root does. Skipping the push
+// when collectionId is absent is deliberate: the old code guessed a target
+// via a legacy shared CONTRACT_ADDRESS fallback, which is exactly the
+// wrong-contract bug this whole redesign exists to eliminate. Once Bearth-FE
+// is taught which collection it represents, pass collectionId here too.
 export async function autoRegisterAndSync(
   address: string,
   source: string,
@@ -128,7 +136,7 @@ export async function autoRegisterAndSync(
     "SELECT customer_wallet_auto_register($1, $2)",
     [address.toLowerCase(), source]
   );
-  triggerChainSync(collectionId);
+  if (collectionId) triggerChainSync(collectionId);
 }
 
 export async function requireRegisteredWallets(wallets: string[]): Promise<void> {
