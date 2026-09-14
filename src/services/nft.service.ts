@@ -103,51 +103,50 @@ export async function listNft(params: {
      LIMIT $7 OFFSET $8`,
     [search, deliveryStatusCode, stageCode, revealed, waveId, waveNumber, limit, offset, minted, mintedFrom, mintedTo, mintType, rarityTier, ownerAddress, collectionId],
   );
-  const { rows: statsRows } = await pool.query(
-    `SELECT
-      COUNT(*)                                                                AS total_all,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'pending')            AS pre_mint_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'reserved')           AS reserved_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'treasury_pending')      AS treasury_pending_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code IN ('treasury_wallet','transferred')) AS treasury_wallet_count,
-      COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL AND NOT nr.is_revealed) AS blind_count,
-      -- "Revealed" = artwork unlocked, full stop -- independent of who holds
-      -- the token. Was briefly narrowed to delivery_status_code='revealed'
-      -- (customer-held only), which made the card disagree with itself: it
-      -- showed 303 but clicking it returned 5. User corrected this live
-      -- 2026-09-15 -- Treasury-held tokens are just as "revealed" as
-      -- customer-held ones; holder location is a separate fact (see the
-      -- Treasury Wallet card), not a sub-case of revealed-ness.
-      COUNT(*) FILTER (WHERE nr.is_revealed AND nr.token_id IS NOT NULL)     AS revealed_count,
-      COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL)                        AS minted_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'sold')               AS sold_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'delivered')          AS delivered_count
-    FROM v_nft_records nr
-    WHERE ($1::UUID IS NULL OR nr.collection_id = $1::UUID)`,
-    [collectionId],
-  );
-  const st = statsRows[0] ?? {};
-
-  const { rows: dcwRows } = await pool.query(
-    `SELECT COUNT(DISTINCT nr.owner_address) FILTER (
-        WHERE nr.owner_address IS NOT NULL
-          AND LOWER(nr.owner_address) <> LOWER(nc.contract_treasury_address)
-      ) AS distinct_customer_wallets
-     FROM v_nft_records nr
-     JOIN nft_collections nc ON nc.id = nr.collection_id
-     WHERE ($1::UUID IS NULL OR nr.collection_id = $1::UUID)`,
-    [collectionId],
-  );
-  const distinctCustomerWalletCount = Number(dcwRows[0]?.distinct_customer_wallets ?? 0);
-
-  // Real "how many distinct customer wallets minted, per wave" -- only
-  // meaningful scoped to one collection (wave_number repeats 1-7 across
-  // collections, so an "All Collections" grouping would merge unrelated
-  // waves together). Excludes the collection's own treasury wallet, which
-  // is not a customer.
-  let walletsByWave: { waveNumber: number; waveName: string; distinctWallets: number }[] = [];
-  if (collectionId) {
-    const { rows: wbwRows } = await pool.query(
+  // These four stats queries are all independent given the same collectionId
+  // scope -- run concurrently instead of one-by-one so adding new stats
+  // (distinct wallets, rarity breakdown) doesn't compound this endpoint's
+  // latency with each extra round-trip.
+  const [{ rows: statsRows }, { rows: dcwRows }, wbwResult, rtbResult] = await Promise.all([
+    pool.query(
+      `SELECT
+        COUNT(*)                                                                AS total_all,
+        COUNT(*) FILTER (WHERE nr.delivery_status_code = 'pending')            AS pre_mint_count,
+        COUNT(*) FILTER (WHERE nr.delivery_status_code = 'reserved')           AS reserved_count,
+        COUNT(*) FILTER (WHERE nr.delivery_status_code = 'treasury_pending')      AS treasury_pending_count,
+        COUNT(*) FILTER (WHERE nr.delivery_status_code IN ('treasury_wallet','transferred')) AS treasury_wallet_count,
+        COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL AND NOT nr.is_revealed) AS blind_count,
+        -- "Revealed" = artwork unlocked, full stop -- independent of who holds
+        -- the token. Was briefly narrowed to delivery_status_code='revealed'
+        -- (customer-held only), which made the card disagree with itself: it
+        -- showed 303 but clicking it returned 5. User corrected this live
+        -- 2026-09-15 -- Treasury-held tokens are just as "revealed" as
+        -- customer-held ones; holder location is a separate fact (see the
+        -- Treasury Wallet card), not a sub-case of revealed-ness.
+        COUNT(*) FILTER (WHERE nr.is_revealed AND nr.token_id IS NOT NULL)     AS revealed_count,
+        COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL)                        AS minted_count,
+        COUNT(*) FILTER (WHERE nr.delivery_status_code = 'sold')               AS sold_count,
+        COUNT(*) FILTER (WHERE nr.delivery_status_code = 'delivered')          AS delivered_count
+      FROM v_nft_records nr
+      WHERE ($1::UUID IS NULL OR nr.collection_id = $1::UUID)`,
+      [collectionId],
+    ),
+    pool.query(
+      `SELECT COUNT(DISTINCT nr.owner_address) FILTER (
+          WHERE nr.owner_address IS NOT NULL
+            AND LOWER(nr.owner_address) <> LOWER(nc.contract_treasury_address)
+        ) AS distinct_customer_wallets
+       FROM v_nft_records nr
+       JOIN nft_collections nc ON nc.id = nr.collection_id
+       WHERE ($1::UUID IS NULL OR nr.collection_id = $1::UUID)`,
+      [collectionId],
+    ),
+    // Real "how many distinct customer wallets minted, per wave" -- only
+    // meaningful scoped to one collection (wave_number repeats 1-7 across
+    // collections, so an "All Collections" grouping would merge unrelated
+    // waves together). Excludes the collection's own treasury wallet, which
+    // is not a customer.
+    collectionId ? pool.query(
       `SELECT w.wave_number, w.name AS wave_name,
               COUNT(DISTINCT nr.owner_address) FILTER (
                 WHERE nr.owner_address IS NOT NULL
@@ -160,23 +159,14 @@ export async function listNft(params: {
         GROUP BY w.wave_number, w.name
         ORDER BY w.wave_number`,
       [collectionId],
-    );
-    walletsByWave = wbwRows.map(r => ({
-      waveNumber: Number(r.wave_number),
-      waveName: r.wave_name as string,
-      distinctWallets: Number(r.distinct_wallets ?? 0),
-    }));
-  }
-
-  // Backs an honest empty-state message: "Legendary" alone is correctly
-  // scoped to customer-held tokens only (see the is_revealed fix above), so
-  // an empty result for a real tier reads as broken unless the UI can say
-  // *where* those tokens actually are (almost always: still in Treasury,
-  // unsold). Cheap -- at most 4 tiers -- and only meaningful per-collection
-  // for the same reason walletsByWave is.
-  let rarityTierBreakdown: { tier: string; customerHeld: number; treasuryHeld: number }[] = [];
-  if (collectionId) {
-    const { rows: rtbRows } = await pool.query(
+    ) : null,
+    // Backs an honest empty-state message: "Legendary" alone is correctly
+    // scoped to customer-held tokens only (see the is_revealed fix above), so
+    // an empty result for a real tier reads as broken unless the UI can say
+    // *where* those tokens actually are (almost always: still in Treasury,
+    // unsold). Cheap -- at most 4 tiers -- and only meaningful per-collection
+    // for the same reason walletsByWave is.
+    collectionId ? pool.query(
       `SELECT LOWER(nr.rarity_tier) AS tier,
               COUNT(*) FILTER (WHERE nr.delivery_status_code = 'revealed') AS customer_held,
               COUNT(*) FILTER (WHERE nr.delivery_status_code IN ('treasury_wallet','transferred')) AS treasury_held
@@ -184,13 +174,20 @@ export async function listNft(params: {
         WHERE nr.collection_id = $1::UUID AND nr.rarity_tier IS NOT NULL
         GROUP BY LOWER(nr.rarity_tier)`,
       [collectionId],
-    );
-    rarityTierBreakdown = rtbRows.map(r => ({
-      tier: r.tier as string,
-      customerHeld: Number(r.customer_held ?? 0),
-      treasuryHeld: Number(r.treasury_held ?? 0),
-    }));
-  }
+    ) : null,
+  ]);
+  const st = statsRows[0] ?? {};
+  const distinctCustomerWalletCount = Number(dcwRows[0]?.distinct_customer_wallets ?? 0);
+  const walletsByWave = (wbwResult?.rows ?? []).map(r => ({
+    waveNumber: Number(r.wave_number),
+    waveName: r.wave_name as string,
+    distinctWallets: Number(r.distinct_wallets ?? 0),
+  }));
+  const rarityTierBreakdown = (rtbResult?.rows ?? []).map(r => ({
+    tier: r.tier as string,
+    customerHeld: Number(r.customer_held ?? 0),
+    treasuryHeld: Number(r.treasury_held ?? 0),
+  }));
 
   return {
     nftRecords:          toCamel(rows),
