@@ -103,6 +103,29 @@ router.get("/", async (req, res, next) => {
         [collectionId],
       );
       const totalOffChain = totalOffChainRow.rows[0]?.total ?? 0;
+
+      // Per-wave record counts (real sales + any treasury-swept remainder) --
+      // this, not nft_waves.sold_count, is what should be compared against
+      // the chain's waveSoldCount. sold_count is a business metric (how many
+      // a customer actually bought) that treasuryClose() deliberately never
+      // touches; waveSoldCount on-chain is the raw capacity counter that
+      // treasuryClose() DOES increment when it sweeps unsold inventory to
+      // treasury. Comparing sold_count to waveSoldCount would permanently
+      // "detect" a discrepancy on every wave the moment it's treasury-closed,
+      // even though nothing is actually out of sync.
+      // owner_address IS NOT NULL excludes autoprovisioned placeholder rows
+      // for waves that haven't minted yet (pre-created so wave scheduling
+      // has somewhere to point token_ids at) -- those aren't on-chain yet
+      // by design, so counting them here would falsely flag every
+      // not-started wave as "DB ahead of chain."
+      const perWaveRecordCountRows = await pool.query(
+        "SELECT wave_num, COUNT(*)::int AS cnt FROM nft_records WHERE collection_id = $1 AND wave_num IS NOT NULL AND owner_address IS NOT NULL GROUP BY wave_num",
+        [collectionId],
+      );
+      const recordCountByWave = new Map<number, number>(
+        perWaveRecordCountRows.rows.map(r => [Number(r.wave_num), Number(r.cnt)]),
+      );
+
       try {
         const contract = await getContractReadOnlyForCollection(collectionId);
         const totalOnChainBn = await contract.totalSupply();
@@ -112,15 +135,15 @@ router.get("/", async (req, res, next) => {
         for (const w of wavesRows.rows) {
           const onChainSoldBn = await contract.waveSoldCount(w.wave_number);
           const onChainSold = Number(onChainSoldBn);
-          const offChainSold = Number(w.sold_count ?? 0);
-          if (onChainSold !== offChainSold) {
+          const offChainRecordCount = recordCountByWave.get(Number(w.wave_number)) ?? 0;
+          if (onChainSold !== offChainRecordCount) {
             waveDiscrepancies.push({
               waveNumber: w.wave_number,
               onChain: onChainSold,
-              offChain: offChainSold,
-              reason: offChainSold < onChainSold
-                ? "DB is behind the chain -- the live event listener may not have processed this block yet, or the API server was briefly down when the mint happened. Usually resolves itself within a minute; if it persists, trigger a manual re-sync."
-                : "DB shows more sold than the chain does -- check for test/manual data written directly to nft_records without a matching on-chain transaction.",
+              offChain: offChainRecordCount,
+              reason: offChainRecordCount < onChainSold
+                ? "DB is behind the chain -- the live event listener may not have processed this block yet, or the API server was briefly down when the mint/treasury-close happened. Usually resolves itself within a minute; if it persists, trigger a manual re-sync."
+                : "DB shows more records than the chain does -- check for test/manual data written directly to nft_records without a matching on-chain transaction.",
             });
           }
         }
