@@ -116,6 +116,34 @@ export async function listNft(params: {
   );
   const st = statsRows[0] ?? {};
 
+  // Real "how many distinct customer wallets minted, per wave" -- only
+  // meaningful scoped to one collection (wave_number repeats 1-7 across
+  // collections, so an "All Collections" grouping would merge unrelated
+  // waves together). Excludes the collection's own treasury wallet, which
+  // is not a customer.
+  let walletsByWave: { waveNumber: number; waveName: string; distinctWallets: number }[] = [];
+  if (collectionId) {
+    const { rows: wbwRows } = await pool.query(
+      `SELECT w.wave_number, w.name AS wave_name,
+              COUNT(DISTINCT nr.owner_address) FILTER (
+                WHERE nr.owner_address IS NOT NULL
+                  AND LOWER(nr.owner_address) <> LOWER(nc.contract_treasury_address)
+              ) AS distinct_wallets
+         FROM nft_waves w
+         JOIN nft_collections nc ON nc.id = w.collection_id
+         LEFT JOIN nft_records nr ON nr.wave_id = w.id
+        WHERE w.collection_id = $1::UUID
+        GROUP BY w.wave_number, w.name
+        ORDER BY w.wave_number`,
+      [collectionId],
+    );
+    walletsByWave = wbwRows.map(r => ({
+      waveNumber: Number(r.wave_number),
+      waveName: r.wave_name as string,
+      distinctWallets: Number(r.distinct_wallets ?? 0),
+    }));
+  }
+
   return {
     nftRecords:          toCamel(rows),
     total:               Number(rows[0]?.total_count      ?? 0),
@@ -129,6 +157,7 @@ export async function listNft(params: {
     mintedCount:         Number(st.minted_count           ?? 0),
     soldCount:           Number(st.sold_count             ?? 0),
     deliveredCount:      Number(st.delivered_count        ?? 0),
+    walletsByWave,
     limit,
     offset,
   };
