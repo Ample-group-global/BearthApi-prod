@@ -64,27 +64,4 @@ router.put("/transfer-validator", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get("/marketplaces", async (req, res, next) => {
-  try {
-    requirePermission(req, "contract_ops.view");
-    const { rows } = await pool.query("SELECT * FROM royalty_marketplaces ORDER BY created_at");
-    res.json({ marketplaces: rows });
-  } catch (err) { next(err); }
-});
-
-router.put("/marketplaces", async (req, res, next) => {
-  try {
-    requirePermission(req, "contract_ops.manage");
-    const { address, name, allowed } = req.body as { address?: string; name?: string; allowed?: boolean };
-    if (!address || !ethers.isAddress(address)) return res.status(422).json({ error: "Valid address required" });
-    await pool.query(
-      `INSERT INTO royalty_marketplaces (address, name, enabled, synced_at)
-       VALUES ($1,$2,$3,NOW())
-       ON CONFLICT (address) DO UPDATE SET name = EXCLUDED.name, enabled = EXCLUDED.enabled, synced_at = NOW()`,
-      [address.toLowerCase(), name ?? null, allowed ?? true]
-    );
-    res.json({ ok: true });
-  } catch (err) { next(err); }
-});
-
 export default router;

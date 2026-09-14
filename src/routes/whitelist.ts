@@ -3,7 +3,7 @@ import rateLimit from "express-rate-limit";
 import pool from "../pool";
 import { buildMerkleTree, getProof } from "../merkle";
 import { reconcileWhitelistRoot, pushEffectiveRootOnChain } from "../services/customer-whitelist.service";
-import { resolveCollectionIdFromContractAddress } from "../services/contract.service";
+import { resolveCollectionIdFromContractAddress, getContractReadOnlyForCollection } from "../services/contract.service";
 import { requirePermission } from "../adminAuth";
 import { HttpError } from "../errors";
 
@@ -276,23 +276,54 @@ router.post("/test", testLimit, async (req: Request, res: Response, next: NextFu
       res.status(400).json({ detail: "Invalid address format" });
       return;
     }
-    const { rows } = await pool.query("SELECT * FROM whitelist_addresses_for_collection($1)", [collectionId]);
-    const addresses = rows.map((r: { address: string }) => r.address);
-    if (!addresses.length) {
-      res.json({ is_whitelisted: false, address, proof: [], root: "0x0", leaf_index: null, generated_at: new Date().toISOString() });
-      return;
-    }
-    const tree = buildMerkleTree(addresses);
     const lower = address.toLowerCase();
-    const leafIndex = addresses.map((a: string) => a.toLowerCase()).indexOf(lower);
-    const isWhitelisted = leafIndex !== -1;
-    const proof = isWhitelisted ? getProof(tree, address) : [];
+
+    const [{ rows }, customerRows] = await Promise.all([
+      pool.query("SELECT * FROM whitelist_addresses_for_collection($1)", [collectionId]),
+      pool.query(
+        `SELECT u.user_code, TRIM(u.first_name || ' ' || u.last_name) AS name
+           FROM customer_wallets cw JOIN users u ON u.id = cw.user_id
+          WHERE LOWER(cw.address) = $1 LIMIT 1`,
+        [lower],
+      ),
+    ]);
+    const customer = customerRows.rows[0]
+      ? { userCode: customerRows.rows[0].user_code ?? null, name: customerRows.rows[0].name || null }
+      : null;
+
+    const addresses = rows.map((r: { address: string }) => r.address);
+    const dbHasAddresses = addresses.length > 0;
+    const tree = dbHasAddresses ? buildMerkleTree(addresses) : null;
+    const leafIndex = tree ? addresses.map((a: string) => a.toLowerCase()).indexOf(lower) : -1;
+    const inDatabase = leafIndex !== -1;
+    const proof = tree && inDatabase ? getProof(tree, address) : [];
+    const dbRoot = tree?.root ?? "0x0";
+
+    // Separately confirms whether the DB-derived root has actually been
+    // pushed on-chain -- an address can be correctly in the database
+    // (inDatabase=true) with a valid proof against dbRoot, yet still fail
+    // to mint on-chain right now if nobody has pushed since it was added.
+    let onChainRoot: string | null = null;
+    let onChainCheckError: string | undefined;
+    try {
+      const contract = await getContractReadOnlyForCollection(collectionId);
+      onChainRoot = await contract.allowlistRoot();
+    } catch (err) {
+      onChainCheckError = err instanceof Error ? err.message : "Could not read the live contract.";
+    }
+    const syncedOnChain = onChainRoot != null && onChainRoot.toLowerCase() === dbRoot.toLowerCase();
+
     res.json({
-      is_whitelisted: isWhitelisted,
+      is_whitelisted: inDatabase, // kept for backward compatibility
+      inDatabase,
       address,
       proof,
-      root: tree.root,
-      leaf_index: isWhitelisted ? leafIndex : null,
+      dbRoot,
+      onChainRoot,
+      syncedOnChain,
+      onChainCheckError,
+      leaf_index: inDatabase ? leafIndex : null,
+      customer,
       generated_at: new Date().toISOString(),
     });
   } catch (e) { next(e); }
