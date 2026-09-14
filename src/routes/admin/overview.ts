@@ -8,15 +8,22 @@ router.get("/", async (req, res, next) => {
   try {
     requirePermission(req, "customers.view");
 
-    const [nftStats, waveStats, customers, team] = await Promise.all([
+    const [nftStats, treasuryStats, waveStats, customers, team] = await Promise.all([
+      // Was LEFT JOIN nft_waves ON collection_id (no per-record wave key) --
+      // fanned every record out against all 7 of its collection's waves, so
+      // COUNT(*) here counted each record 7x. premint/minted need nothing
+      // from nft_waves at all.
       pool.query(`
         SELECT
           COUNT(*) FILTER (WHERE minted_at IS NULL)                    AS premint_count,
-          COUNT(*) FILTER (WHERE minted_at IS NOT NULL AND NOT is_burned) AS minted_count,
-          COALESCE(SUM(w.treasury_minted_count), 0)                    AS treasury_count
-        FROM nft_records r
-        LEFT JOIN nft_waves w ON w.collection_id = r.collection_id
+          COUNT(*) FILTER (WHERE minted_at IS NOT NULL AND NOT is_burned) AS minted_count
+        FROM nft_records
       `),
+      // treasury_minted_count already lives one-row-per-wave on nft_waves --
+      // summing it needs no join to nft_records either. Compounded the fan-
+      // out above: the same per-wave values got re-summed once per fanned-
+      // out record instead of once per wave.
+      pool.query(`SELECT COALESCE(SUM(treasury_minted_count), 0) AS treasury_count FROM nft_waves`),
       pool.query(`
         SELECT v.wave_number, v.wave_name, v.status, v.is_revealed, v.sold_count, v.quantity,
                c.name AS collection_name
@@ -48,7 +55,7 @@ router.get("/", async (req, res, next) => {
       nftStats: {
         premint:  Number(nftStats.rows[0]?.premint_count ?? 0),
         minted:   Number(nftStats.rows[0]?.minted_count ?? 0),
-        treasury: Number(nftStats.rows[0]?.treasury_count ?? 0),
+        treasury: Number(treasuryStats.rows[0]?.treasury_count ?? 0),
       },
       waves: waveStats.rows.map(w => ({
         collectionName: w.collection_name,
