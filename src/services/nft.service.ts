@@ -84,7 +84,14 @@ export async function listNft(params: {
        AND ($10::DATE IS NULL OR nr.minted_at >= $10::DATE)
        AND ($11::DATE IS NULL OR nr.minted_at <  ($11::DATE + interval '1 day'))
        AND ($12::VARCHAR IS NULL OR nr.mint_type = $12)
-       AND ($13::VARCHAR IS NULL OR LOWER(nr.rarity_tier) = LOWER($13))
+       -- rarity_tier is assigned at generation time for every record, revealed
+       -- or not (NFT Studio computes it upfront for the whole collection), so
+       -- filtering on it alone would leak still-blind-boxed tokens' rarity.
+       -- The Admin UI papers over this with a client-side "force revealFilter
+       -- to revealed" guard, but that's not something the DB can trust a
+       -- caller to have done -- require is_revealed here independent of
+       -- whatever $2/delivery status the request happens to also send.
+       AND ($13::VARCHAR IS NULL OR (nr.is_revealed AND LOWER(nr.rarity_tier) = LOWER($13)))
        AND ($14::TEXT IS NULL OR LOWER(nr.owner_address) = LOWER($14))
        AND ($15::UUID IS NULL OR nr.collection_id = $15::UUID)
      ORDER BY ${orderBy}
@@ -99,8 +106,7 @@ export async function listNft(params: {
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'treasury_pending')      AS treasury_pending_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code IN ('treasury_wallet','transferred')) AS treasury_wallet_count,
       COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL AND NOT nr.is_revealed) AS blind_count,
-      COUNT(*) FILTER (WHERE nr.is_revealed AND nr.token_id IS NOT NULL)     AS revealed_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'revealed')             AS customer_wallet_count,
+      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'revealed')             AS revealed_count,
       COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL)                        AS minted_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'sold')               AS sold_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'delivered')          AS delivered_count
@@ -122,7 +128,6 @@ export async function listNft(params: {
     revealedCount:       Number(st.revealed_count         ?? 0),
     mintedCount:         Number(st.minted_count           ?? 0),
     soldCount:           Number(st.sold_count             ?? 0),
-    customerWalletCount: Number(st.customer_wallet_count   ?? 0),
     deliveredCount:      Number(st.delivered_count        ?? 0),
     limit,
     offset,
