@@ -57,6 +57,36 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const RPC_CALL_TIMEOUT_MS = 20_000;
+
+class RpcTimeoutError extends Error {
+  constructor(method: string, ms: number) {
+    super(`RPC call ${method} did not respond within ${ms}ms`);
+    this.name = "RpcTimeoutError";
+  }
+}
+
+// ethers' underlying fetch has no default timeout -- a free/public RPC node
+// that's temporarily overloaded or having a bad moment doesn't error, it
+// just never responds, and the whole call (and everything awaiting it, e.g.
+// a multi-step contract deploy) hangs indefinitely. The existing retry loop
+// only helps once something actually throws. Found live 2026-09-14: a Test1
+// contract deploy hung for 4+ minutes with zero transaction ever broadcast
+// (nonce unchanged) and no error logged -- confirmed stuck on a pre-tx RPC
+// call, not a slow confirmation. Racing every call against a timeout turns
+// a silent hang into a retryable error, and since the public endpoint is a
+// load-balanced multi-node service, a retry has a real chance of landing on
+// a healthier node.
+function withTimeout<T>(promise: Promise<T>, method: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new RpcTimeoutError(method, RPC_CALL_TIMEOUT_MS)), RPC_CALL_TIMEOUT_MS);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 let _inFlight = 0;
 const _queue: Array<() => void> = [];
 
@@ -76,7 +106,7 @@ function toHexBlock(n: number): string {
   return "0x" + n.toString(16);
 }
 
-class ResilientJsonRpcProvider extends ethers.JsonRpcProvider {
+export class ResilientJsonRpcProvider extends ethers.JsonRpcProvider {
   async send(method: string, params: unknown[] | Record<string, unknown>): Promise<any> {
     if (method === "eth_getLogs" && Array.isArray(params) && params[0]) {
       return this.sendGetLogsWithBisection(params[0] as Record<string, unknown>);
@@ -88,12 +118,14 @@ class ResilientJsonRpcProvider extends ethers.JsonRpcProvider {
     for (let attempt = 0; ; attempt++) {
       await acquireRpcSlot();
       try {
-        return await super.send(method, params);
+        return await withTimeout(super.send(method, params), method);
       } catch (err) {
-        if (!isRateLimitError(err) || attempt >= MAX_RPC_RETRIES) throw err;
+        const retryable = isRateLimitError(err) || err instanceof RpcTimeoutError;
+        if (!retryable || attempt >= MAX_RPC_RETRIES) throw err;
         const jitter = Math.random() * 250;
         const delay = RPC_RETRY_BASE_DELAY_MS * 2 ** attempt + jitter;
-        logger.warn(`[provider] rate-limited on ${method}, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${MAX_RPC_RETRIES})`);
+        const reason = err instanceof RpcTimeoutError ? "timed out" : "rate-limited";
+        logger.warn(`[provider] ${reason} on ${method}, retrying in ${Math.round(delay)}ms (attempt ${attempt + 1}/${MAX_RPC_RETRIES})`);
         await sleep(delay);
       } finally {
         releaseRpcSlot();
@@ -102,6 +134,21 @@ class ResilientJsonRpcProvider extends ethers.JsonRpcProvider {
   }
 
   private async sendGetLogsWithBisection(filter: Record<string, unknown>): Promise<any[]> {
+    // A freshly-attached live listener's initial getBlockNumber() call and a
+    // subsequent "block" event can land on different backend nodes of a
+    // load-balanced public RPC (ethereum-sepolia-rpc.publicnode.com) with
+    // slightly different sync heights -- producing a momentary
+    // fromBlock > toBlock range that's guaranteed invalid on any node.
+    // Retrying or bisecting it can't help (there's nothing to converge on);
+    // returning empty is correct since the next poll cycle naturally
+    // re-requests a corrected range once the cursor catches up. Found live
+    // 2026-09-14 right after attaching a freshly-deployed collection's
+    // listeners -- was surfacing as a repeating "invalid block range params"
+    // unhandled rejection.
+    const fromEarly = typeof filter.fromBlock === "string" ? Number.parseInt(filter.fromBlock, 16) : NaN;
+    const toEarly = typeof filter.toBlock === "string" ? Number.parseInt(filter.toBlock, 16) : NaN;
+    if (Number.isFinite(fromEarly) && Number.isFinite(toEarly) && fromEarly > toEarly) return [];
+
     try {
       return await this.sendWithRetry("eth_getLogs", [filter]);
     } catch (err) {

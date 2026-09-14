@@ -381,41 +381,41 @@ const WATCHED_EVENTS = [
   "AllowlistRootUpdated", "TokenRarityUpdated", "Withdrawn",
 ];
 
+// Registering each watched event via contract.on(eventName, cb) makes
+// ethers create a SEPARATE PollingEventSubscriber per event name -- each
+// with its own independent eth_getLogs call every poll cycle. With 20
+// watched events per contract and multiple collections deployed, that's 40+
+// concurrent eth_getLogs calls sharing one small concurrency semaphore.
+// Found live 2026-09-14: this free RPC's eth_getLogs genuinely takes ~14s
+// per call (confirmed via direct timing, not just this app's queueing) --
+// with that many subscriptions all needing a slot every ~8s, the queue
+// never drains, starving everything else sharing the same provider
+// (a contract deploy hung for 4+ minutes competing for the same slots).
+// Collapsing all of one contract's watched events into a SINGLE combined
+// filter (topic0 as an OR-list) cuts this to exactly one eth_getLogs call
+// per contract per poll cycle, regardless of how many event types it emits.
 function attachListenersFor(contract: Contract, label: string): number {
-  const abiEventNames = new Set(
-    contract.interface.fragments
-      .filter((f) => f.type === "event")
-      .map((f) => (f as unknown as { name: string }).name),
-  );
+  const eventFragments = contract.interface.fragments.filter(
+    (f) => f.type === "event" && WATCHED_EVENTS.includes((f as unknown as { name: string }).name),
+  ) as unknown as Array<{ name: string; topicHash: string }>;
+  if (eventFragments.length === 0) return 0;
 
-  let registered = 0;
-  for (const eventName of WATCHED_EVENTS) {
-    if (!abiEventNames.has(eventName)) continue;
+  const topicHashes = eventFragments.map((f) => f.topicHash);
+  const contractAddress = String(contract.target);
+  const provider = contract.runner as ethers.Provider;
+
+  provider.on({ address: contractAddress, topics: [topicHashes] }, async (log: ethers.Log) => {
+    let parsed: ethers.LogDescription | null;
     try {
-      contract.on(eventName, async (...rawArgs: unknown[]) => {
-        // ethers v6 passes a ContractEventPayload as the final callback arg,
-        // not a flat EventLog -- the real tx hash/block/index live nested at
-        // payload.log.*, not on the payload itself. Reading them off the
-        // payload directly silently produced txHash=null for every live
-        // event, which skipped the nft_event_log insert entirely (syncEvent
-        // only writes/dedupes when txHash is truthy) while the switch-case
-        // below still ran with a null txHash. This is why live mints/pauses
-        // never appeared to sync in real time: the actual sync path this
-        // whole time was the periodic resyncFromBlock() backfill (see
-        // routes/nft-sell/waves.ts), not this listener. Found live 2026-09-12
-        // by dumping the payload's own keys (filter/emitter/log/args/fragment
-        // -- no transactionHash/blockNumber at the top level).
-        const payload = rawArgs[rawArgs.length - 1] as EventLog & { log?: EventLog };
-        const ev = payload.log ?? payload;
-        const args = rawArgs.slice(0, -1);
-        await syncEvent(eventName, args, ev.transactionHash ?? null, ev.blockNumber, ev.index, String(contract.target));
-      });
-      registered++;
-    } catch (err) {
-      console.warn(`[contract.service] (${label}) Could not register listener for '${eventName}':`, err);
+      parsed = contract.interface.parseLog(log);
+    } catch {
+      return;
     }
-  }
-  return registered;
+    if (!parsed) return;
+    await syncEvent(parsed.name, [...parsed.args], log.transactionHash ?? null, log.blockNumber, log.index, contractAddress);
+  });
+
+  return eventFragments.length;
 }
 
 export async function attachListenersForCollection(collectionId: string): Promise<void> {

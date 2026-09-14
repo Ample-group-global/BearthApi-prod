@@ -5,7 +5,10 @@ import BearthNFTArtifact from "../contracts/deploy-abi/BearthNFT.json";
 import BearthProxyArtifact from "../contracts/deploy-abi/BearthProxy.json";
 import ValidatorArtifact from "../contracts/deploy-abi/CreatorTokenTransferValidator.json";
 import RevealCoordinatorArtifact from "../contracts/deploy-abi/BearthRevealCoordinator.json";
+import BearthTimelockArtifact from "../contracts/deploy-abi/BearthTimelock.json";
+import BearthTreasuryArtifact from "../contracts/deploy-abi/BearthTreasury.json";
 import { invalidateCollectionContractCache, attachListenersForCollection } from "./contract.service";
+import { ResilientJsonRpcProvider } from "../utils/contract-factory";
 
 const VRF_COORDINATOR: Record<DeployNetwork, string> = {
   sepolia: "0x9DdfaCa8183c41ad55329BdeeD9F6A8d53168B1B",
@@ -45,7 +48,36 @@ function getNetworkConfig(network: DeployNetwork) {
   return { rpcUrl, privateKey, emergencyWallet, adminGovernanceWallet };
 }
 
+// Deploy is a long, multi-step, real-money on-chain operation with no
+// undo. Two collections' deploys running concurrently was never intended
+// -- found live 2026-09-14 when a UI test script clicked the wrong
+// collection's Deploy button while unaware another deploy might be in
+// flight. A single in-memory lock across the whole process is enough
+// (this API runs as one instance) and turns "click twice" or "two admins
+// deploying different collections at once" into a clear error instead of
+// two deploys racing for the same RPC/wallet nonce.
+let _deployInProgress: string | null = null;
+
 export async function deployCollectionContract(params: {
+  collectionId: string;
+  network: DeployNetwork;
+  blindBoxUri: string;
+  deployedBy: string | null;
+}) {
+  const { collectionId, network, blindBoxUri, deployedBy } = params;
+
+  if (_deployInProgress) {
+    throw new Error(`A contract deploy is already in progress for collection ${_deployInProgress}. Wait for it to finish before starting another.`);
+  }
+  _deployInProgress = collectionId;
+  try {
+    return await deployCollectionContractInner({ collectionId, network, blindBoxUri, deployedBy });
+  } finally {
+    _deployInProgress = null;
+  }
+}
+
+async function deployCollectionContractInner(params: {
   collectionId: string;
   network: DeployNetwork;
   blindBoxUri: string;
@@ -66,13 +98,39 @@ export async function deployCollectionContract(params: {
   if (!Number.isInteger(totalSupply) || totalSupply < 33) {
     throw new Error("Collection supply must be a whole number of at least 33 before deploying a contract (so every wave gets at least 1 token).");
   }
+
+  // The Deploy button is already hidden in the UI unless generation/export
+  // is fully done, but that's a display-only gate -- nothing stopped this
+  // function itself from being called directly with a collection whose
+  // nft_records was never actually populated. Enforcing it here too means
+  // the precondition holds regardless of which UI path (or future one)
+  // calls this function.
+  const { rows: nrRows } = await pool.query(
+    "SELECT COUNT(*) AS cnt FROM nft_records WHERE collection_id = $1",
+    [collectionId],
+  );
+  const syncedCount = Number(nrRows[0]?.cnt ?? 0);
+  if (syncedCount < totalSupply) {
+    throw new Error(
+      `Cannot deploy: nft_records has ${syncedCount}/${totalSupply} rows synced for this collection. ` +
+      `Finish generation/export so every token is synced into nft_records before deploying a contract.`,
+    );
+  }
+
   const waveQtys = fibonacciWaveQtys(totalSupply);
 
   const { rpcUrl, privateKey, emergencyWallet, adminGovernanceWallet } = getNetworkConfig(network);
-  const provider = new ethers.JsonRpcProvider(rpcUrl);
+  // Deploy is a long chain of ~10 sequential on-chain transactions
+  // (validator, implementation, proxy+init, role grants, VRF coordinator,
+  // wiring, ownership transfer). A plain JsonRpcProvider has zero retry/
+  // backoff protection -- fine while pointed at paid Alchemy infra, but
+  // fragile now that the RPC env vars point at a free public endpoint
+  // (switched 2026-09-12 after Alchemy's monthly quota ran out). Reusing
+  // the same resilient wrapper the rest of the API already relies on for
+  // exactly this kind of transient rate-limit/network hiccup.
+  const provider = new ResilientJsonRpcProvider(rpcUrl);
   const signer = new ethers.Wallet(privateKey, provider);
   const adminWallet = signer.address;
-  const treasury = signer.address;
   const operationsPrivateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
   if (!operationsPrivateKey) {
     throw new Error("CONTRACT_PRIVATE_KEY (or FIXED_PRIVATE_KEY) is not configured on the server -- required so the deployed contract's OPERATOR_ROLE matches the wallet BearthApi-V1 actually signs wave-management transactions with.");
@@ -104,6 +162,49 @@ export async function deployCollectionContract(params: {
 
   logger.info(`[contract-deploy] Deploying contract for "${collection.name}" on ${network} — deployer ${signer.address}, supply ${totalSupply}, waves ${JSON.stringify(waveQtys)}`);
 
+  // A real BearthTimelock per collection, deployed first since both
+  // BearthTreasury's admin and BearthNFT's UPGRADER_ROLE/TREASURY_TIMELOCK_ROLE
+  // now route through it, instead of sitting directly on a human-controlled
+  // wallet with zero delay. Mirrors the exact config already used and
+  // documented in scripts/setup-timelock.ts for the original single
+  // contract: admin-only proposer, open executor (anyone can execute an
+  // already-public, already-approved change), self-governed (no key can
+  // shorten/bypass the delay).
+  const FORTY_EIGHT_HOURS = 48 * 60 * 60;
+  const TimelockFactory = new ethers.ContractFactory(BearthTimelockArtifact.abi, BearthTimelockArtifact.bytecode, signer);
+  const timelock = await TimelockFactory.deploy(
+    FORTY_EIGHT_HOURS, [adminGovernanceWallet], [ethers.ZeroAddress], ethers.ZeroAddress,
+  );
+  await timelock.waitForDeployment();
+  const timelockAddress = await timelock.getAddress();
+  logger.info(`[contract-deploy] BearthTimelock deployed: ${timelockAddress} (48h delay, proposer ${adminGovernanceWallet})`);
+
+  // BearthTreasury was never actually deployed as part of this flow before --
+  // treasuryWallet was just the deploy wallet's own EOA, with none of
+  // BearthTreasury's withdrawal limits/destination allowlist/pause switch
+  // protecting anything. DEFAULT_ADMIN_ROLE (which can change those limits
+  // or pause state) goes to the Timelock, not a wallet -- so even a
+  // compromised admin key can't instantly disable the caps. WITHDRAWER_ROLE
+  // (routine withdrawals) stays on the operations wallet -- day-to-day
+  // withdrawals shouldn't need a 48h delay, only CHANGING the rules should.
+  const treasuryLimitPrefix = network === "mainnet" ? "MAINNET" : "SEPOLIA";
+  const maxPerTxEnv = process.env[`TREASURY_MAX_PER_TX_ETH_${treasuryLimitPrefix}`];
+  const dailyLimitEnv = process.env[`TREASURY_DAILY_LIMIT_ETH_${treasuryLimitPrefix}`];
+  if (network === "mainnet" && (!maxPerTxEnv || !dailyLimitEnv)) {
+    throw new Error(
+      "Refusing to deploy to mainnet: TREASURY_MAX_PER_TX_ETH_MAINNET and TREASURY_DAILY_LIMIT_ETH_MAINNET " +
+      "must be set explicitly -- these are real financial limits protecting real funds and must be a " +
+      "deliberate decision, not a default.",
+    );
+  }
+  const maxPerTxWei = ethers.parseEther(maxPerTxEnv ?? "10");
+  const dailyLimitWei = ethers.parseEther(dailyLimitEnv ?? "50");
+  const TreasuryFactory = new ethers.ContractFactory(BearthTreasuryArtifact.abi, BearthTreasuryArtifact.bytecode, signer);
+  const treasuryContract = await TreasuryFactory.deploy(timelockAddress, operationsWallet, maxPerTxWei, dailyLimitWei);
+  await treasuryContract.waitForDeployment();
+  const treasuryAddress = await treasuryContract.getAddress();
+  logger.info(`[contract-deploy] BearthTreasury deployed: ${treasuryAddress} (admin=Timelock, withdrawer=${operationsWallet}, maxPerTx=${ethers.formatEther(maxPerTxWei)} ETH, dailyLimit=${ethers.formatEther(dailyLimitWei)} ETH)`);
+
   const ValidatorFactory = new ethers.ContractFactory(ValidatorArtifact.abi, ValidatorArtifact.bytecode, signer);
   const validator = await ValidatorFactory.deploy(signer.address);
   await validator.waitForDeployment();
@@ -123,7 +224,7 @@ export async function deployCollectionContract(params: {
     adminWallet,
     operationsWallet,
     emergencyWallet,
-    treasury,
+    treasuryAddress,
     validatorAddress,
     waveQtys,
   ]);
@@ -143,6 +244,14 @@ export async function deployCollectionContract(params: {
   await (await validatorContract.setTransferSecurityLevelOfCollection(proxyAddress, LEVEL_2)).wait();
   await (await validatorContract.addAccountsToWhitelist(proxyAddress, OPERATOR_WHITELIST, [OPENSEA_SEAPORT])).wait();
   logger.info(`[contract-deploy] Validator configured (LEVEL_2, OpenSea Seaport whitelisted)`);
+
+  // Validator's owner (plain, single-step Ownable) can instantly de-whitelist
+  // marketplaces or change the security level for this collection with zero
+  // delay or public notice -- a centralization/DoS risk flagged in this
+  // session's security audit. Config calls above must happen BEFORE this,
+  // since transferOwnership is immediate and irrevocable on plain Ownable.
+  await (await validatorContract.transferOwnership(timelockAddress)).wait();
+  logger.info(`[contract-deploy] Validator ownership transferred to Timelock ${timelockAddress} -- security-level/whitelist changes now require the same 48h delay`);
 
   logger.info(`[contract-deploy] Deploying BearthRevealCoordinator (VRF)...`);
   const vrfCoordinatorAddr = VRF_COORDINATOR[network];
@@ -198,20 +307,30 @@ export async function deployCollectionContract(params: {
     `still owned by the deploy wallet until that wallet calls acceptOwnership() on ${coordinatorAddress} directly (e.g. via Etherscan). ` +
     (network === "mainnet" ? "REQUIRED before mainnet reveal is safe." : "Recommended before treating this deploy as production-representative."));
 
+  // Previously granted directly to adminGovernanceWallet -- a single wallet
+  // key could then upgrade this contract or redirect the treasury wallet
+  // instantly, with zero delay or public notice, defeating the entire point
+  // of having these as separate governance-gated roles. Routing them through
+  // the Timelock instead means every such change is public on-chain for 48h
+  // before it can take effect, and self-administration (see BearthNFT.sol's
+  // initialize()) means DEFAULT_ADMIN_ROLE can never re-grant these directly
+  // to a wallet later either.
   const upgraderRole = await proxyContract.UPGRADER_ROLE();
   const treasuryTimelockRole = await proxyContract.TREASURY_TIMELOCK_ROLE();
-  await (await proxyContract.grantRole(upgraderRole, adminGovernanceWallet)).wait();
-  await (await proxyContract.grantRole(treasuryTimelockRole, adminGovernanceWallet)).wait();
-  logger.info(`[contract-deploy] UPGRADER_ROLE + TREASURY_TIMELOCK_ROLE granted to Admin/Governance wallet ${adminGovernanceWallet}`);
+  await (await proxyContract.grantRole(upgraderRole, timelockAddress)).wait();
+  await (await proxyContract.grantRole(treasuryTimelockRole, timelockAddress)).wait();
+  logger.info(`[contract-deploy] UPGRADER_ROLE + TREASURY_TIMELOCK_ROLE granted to Timelock ${timelockAddress} (48h delay, not a direct wallet)`);
 
   await pool.query(
     `UPDATE nft_collections SET
        contract_address = $1, contract_network = $2, contract_validator_address = $3,
        contract_deploy_tx_hash = $4, contract_deployed_at = now(), contract_deployed_by = $5,
-       contract_reveal_coordinator_address = $7, contract_vrf_subscription_id = $8
+       contract_reveal_coordinator_address = $7, contract_vrf_subscription_id = $8,
+       contract_treasury_address = $9, contract_timelock_address = $10
      WHERE id = $6`,
     [proxyAddress, network, validatorAddress, deployTx?.hash ?? null, deployedBy, collectionId,
-     coordinatorAddress, vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null],
+     coordinatorAddress, vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null,
+     treasuryAddress, timelockAddress],
   );
 
   invalidateCollectionContractCache(collectionId);
@@ -226,5 +345,7 @@ export async function deployCollectionContract(params: {
     txHash: deployTx?.hash ?? null,
     revealCoordinatorAddress: coordinatorAddress,
     vrfSubscriptionId: vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null,
+    treasuryAddress,
+    timelockAddress,
   };
 }
