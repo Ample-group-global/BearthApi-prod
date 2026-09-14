@@ -111,7 +111,14 @@ export async function listNft(params: {
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'treasury_pending')      AS treasury_pending_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code IN ('treasury_wallet','transferred')) AS treasury_wallet_count,
       COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL AND NOT nr.is_revealed) AS blind_count,
-      COUNT(*) FILTER (WHERE nr.delivery_status_code = 'revealed')             AS revealed_count,
+      -- "Revealed" = artwork unlocked, full stop -- independent of who holds
+      -- the token. Was briefly narrowed to delivery_status_code='revealed'
+      -- (customer-held only), which made the card disagree with itself: it
+      -- showed 303 but clicking it returned 5. User corrected this live
+      -- 2026-09-15 -- Treasury-held tokens are just as "revealed" as
+      -- customer-held ones; holder location is a separate fact (see the
+      -- Treasury Wallet card), not a sub-case of revealed-ness.
+      COUNT(*) FILTER (WHERE nr.is_revealed AND nr.token_id IS NOT NULL)     AS revealed_count,
       COUNT(*) FILTER (WHERE nr.token_id IS NOT NULL)                        AS minted_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'sold')               AS sold_count,
       COUNT(*) FILTER (WHERE nr.delivery_status_code = 'delivered')          AS delivered_count
