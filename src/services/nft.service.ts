@@ -116,6 +116,18 @@ export async function listNft(params: {
   );
   const st = statsRows[0] ?? {};
 
+  const { rows: dcwRows } = await pool.query(
+    `SELECT COUNT(DISTINCT nr.owner_address) FILTER (
+        WHERE nr.owner_address IS NOT NULL
+          AND LOWER(nr.owner_address) <> LOWER(nc.contract_treasury_address)
+      ) AS distinct_customer_wallets
+     FROM v_nft_records nr
+     JOIN nft_collections nc ON nc.id = nr.collection_id
+     WHERE ($1::UUID IS NULL OR nr.collection_id = $1::UUID)`,
+    [collectionId],
+  );
+  const distinctCustomerWalletCount = Number(dcwRows[0]?.distinct_customer_wallets ?? 0);
+
   // Real "how many distinct customer wallets minted, per wave" -- only
   // meaningful scoped to one collection (wave_number repeats 1-7 across
   // collections, so an "All Collections" grouping would merge unrelated
@@ -144,6 +156,30 @@ export async function listNft(params: {
     }));
   }
 
+  // Backs an honest empty-state message: "Legendary" alone is correctly
+  // scoped to customer-held tokens only (see the is_revealed fix above), so
+  // an empty result for a real tier reads as broken unless the UI can say
+  // *where* those tokens actually are (almost always: still in Treasury,
+  // unsold). Cheap -- at most 4 tiers -- and only meaningful per-collection
+  // for the same reason walletsByWave is.
+  let rarityTierBreakdown: { tier: string; customerHeld: number; treasuryHeld: number }[] = [];
+  if (collectionId) {
+    const { rows: rtbRows } = await pool.query(
+      `SELECT LOWER(nr.rarity_tier) AS tier,
+              COUNT(*) FILTER (WHERE nr.delivery_status_code = 'revealed') AS customer_held,
+              COUNT(*) FILTER (WHERE nr.delivery_status_code IN ('treasury_wallet','transferred')) AS treasury_held
+         FROM v_nft_records nr
+        WHERE nr.collection_id = $1::UUID AND nr.rarity_tier IS NOT NULL
+        GROUP BY LOWER(nr.rarity_tier)`,
+      [collectionId],
+    );
+    rarityTierBreakdown = rtbRows.map(r => ({
+      tier: r.tier as string,
+      customerHeld: Number(r.customer_held ?? 0),
+      treasuryHeld: Number(r.treasury_held ?? 0),
+    }));
+  }
+
   return {
     nftRecords:          toCamel(rows),
     total:               Number(rows[0]?.total_count      ?? 0),
@@ -157,7 +193,9 @@ export async function listNft(params: {
     mintedCount:         Number(st.minted_count           ?? 0),
     soldCount:           Number(st.sold_count             ?? 0),
     deliveredCount:      Number(st.delivered_count        ?? 0),
+    distinctCustomerWalletCount,
     walletsByWave,
+    rarityTierBreakdown,
     limit,
     offset,
   };
