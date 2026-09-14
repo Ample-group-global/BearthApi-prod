@@ -128,6 +128,8 @@ router.get("/", async (req, res, next) => {
       waveDiscrepancies: Array<{ waveNumber: number; onChain: number; offChain: number; reason: string }>;
       error?: string;
     } = { checked: false, inSync: true, totalOnChain: null, totalOffChain: 0, waveDiscrepancies: [] };
+    const treasuryCountByWave = new Map<number, number>();
+    const statusByWave = new Map<number, string>();
 
     if (collectionId) {
       const totalOffChainRow = await pool.query(
@@ -158,6 +160,27 @@ router.get("/", async (req, res, next) => {
         perWaveRecordCountRows.rows.map(r => [Number(r.wave_num), Number(r.cnt)]),
       );
 
+      // How many of each wave's tokens currently sit in the collection's own
+      // Treasury contract (the unsold remainder treasuryClose() swept there).
+      const perWaveTreasuryRows = await pool.query(
+        `SELECT nr.wave_num, COUNT(*)::int AS cnt
+           FROM nft_records nr
+           JOIN nft_collections nc ON nc.id = nr.collection_id
+          WHERE nr.collection_id = $1 AND nr.wave_num IS NOT NULL
+            AND LOWER(nr.owner_address) = LOWER(nc.contract_treasury_address)
+          GROUP BY nr.wave_num`,
+        [collectionId],
+      );
+      for (const r of perWaveTreasuryRows.rows) treasuryCountByWave.set(Number(r.wave_num), Number(r.cnt));
+
+      // nft_waves.status is set once at creation and never updated again
+      // (every wave in this database is still literally "pending" or
+      // "upcoming", even ones long closed and revealed) -- the Waves
+      // management page already knows this and derives real status
+      // client-side from on-chain waveClosed/waveRevealed instead of
+      // trusting that column. Do the same here so the Dashboard doesn't
+      // show a stale "pending" badge on a wave that's fully done.
+
       try {
         const contract = await getContractReadOnlyForCollection(collectionId);
         const totalOnChainBn = await contract.totalSupply();
@@ -165,12 +188,19 @@ router.get("/", async (req, res, next) => {
 
         const waveDiscrepancies: typeof syncCheck.waveDiscrepancies = [];
         for (const w of wavesRows.rows) {
-          const onChainSoldBn = await contract.waveSoldCount(w.wave_number);
+          const waveNum = Number(w.wave_number);
+          const [onChainSoldBn, waveClosed, waveRevealed, startTimeBn, endTimeBn] = await Promise.all([
+            contract.waveSoldCount(waveNum),
+            contract.waveClosed(waveNum),
+            contract.waveRevealed(waveNum),
+            contract.waveStartTime(waveNum),
+            contract.waveEndTime(waveNum),
+          ]);
           const onChainSold = Number(onChainSoldBn);
-          const offChainRecordCount = recordCountByWave.get(Number(w.wave_number)) ?? 0;
+          const offChainRecordCount = recordCountByWave.get(waveNum) ?? 0;
           if (onChainSold !== offChainRecordCount) {
             waveDiscrepancies.push({
-              waveNumber: w.wave_number,
+              waveNumber: waveNum,
               onChain: onChainSold,
               offChain: offChainRecordCount,
               reason: offChainRecordCount < onChainSold
@@ -178,6 +208,18 @@ router.get("/", async (req, res, next) => {
                 : "DB shows more records than the chain does -- check for test/manual data written directly to nft_records without a matching on-chain transaction.",
             });
           }
+
+          const nowMs = Date.now();
+          const startMs = Number(startTimeBn) * 1000;
+          const endMs = Number(endTimeBn) * 1000;
+          let derived: string;
+          if (waveRevealed) derived = "revealed";
+          else if (waveClosed) derived = "closed";
+          else if (startTimeBn === 0n) derived = w.status;
+          else if (nowMs < startMs) derived = "upcoming";
+          else if (endTimeBn === 0n || nowMs < endMs) derived = "active";
+          else derived = "ended";
+          statusByWave.set(waveNum, derived);
         }
 
         syncCheck = {
@@ -200,8 +242,9 @@ router.get("/", async (req, res, next) => {
       const sold  = Number(w.sold_count ?? 0);
       return {
         waveNumber: w.wave_number,
+        treasuryQty: treasuryCountByWave.get(Number(w.wave_number)) ?? 0,
         name: w.name,
-        status: w.status,
+        status: statusByWave.get(Number(w.wave_number)) ?? w.status,
         priceEth: price,
         quantity: Number(w.quantity ?? 0),
         soldCount: sold,
