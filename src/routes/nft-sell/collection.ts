@@ -13,6 +13,7 @@ import {
   contractBlockAccount,
   contractSetPurchaseLimitConfig,
   contractSetPhase,
+  contractAirdropEth,
   resolveCollectionIdFromContractAddress,
 } from "../../services/contract.service";
 import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } from "../../services/timelock.service";
@@ -178,6 +179,28 @@ router.post("/withdraw", async (req, res, next) => {
     if (!collectionId) return;
     const receipt = await contractWithdraw(collectionId);
     res.json({ ok: true, txHash: receipt.hash });
+  } catch (err) { next(err); }
+});
+
+router.post("/airdrop-eth", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const { recipients, amountEachEth } = req.body as { recipients?: string[]; amountEachEth?: string };
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      res.status(400).json({ error: "recipients must be a non-empty array of addresses" }); return;
+    }
+    if (recipients.length > 500) {
+      res.status(400).json({ error: "Max 500 recipients per airdrop (contract limit)" }); return;
+    }
+    const invalid = recipients.find((r) => !ethers.isAddress(r));
+    if (invalid) { res.status(400).json({ error: `Invalid recipient address: ${invalid}` }); return; }
+    if (!amountEachEth || Number(amountEachEth) <= 0) {
+      res.status(400).json({ error: "amountEachEth must be a positive number" }); return;
+    }
+    const receipt = await contractAirdropEth(collectionId, recipients, ethers.parseEther(amountEachEth));
+    res.json({ ok: true, txHash: receipt.hash, recipientCount: recipients.length });
   } catch (err) { next(err); }
 });
 

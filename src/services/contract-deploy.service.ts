@@ -7,6 +7,7 @@ import ValidatorArtifact from "../contracts/deploy-abi/CreatorTokenTransferValid
 import RevealCoordinatorArtifact from "../contracts/deploy-abi/BearthRevealCoordinator.json";
 import BearthTimelockArtifact from "../contracts/deploy-abi/BearthTimelock.json";
 import BearthTreasuryArtifact from "../contracts/deploy-abi/BearthTreasury.json";
+import BearthAirdropArtifact from "../contracts/deploy-abi/BearthAirdrop.json";
 import { invalidateCollectionContractCache, attachListenersForCollection } from "./contract.service";
 import { ResilientJsonRpcProvider } from "../utils/contract-factory";
 
@@ -199,11 +200,29 @@ async function deployCollectionContractInner(params: {
   }
   const maxPerTxWei = ethers.parseEther(maxPerTxEnv ?? "10");
   const dailyLimitWei = ethers.parseEther(dailyLimitEnv ?? "50");
+  // Without seeding at least one approved destination here, the very first
+  // withdrawEth()/transferNFT() call on a fresh Treasury would need
+  // setApprovedDestination() first -- DEFAULT_ADMIN_ROLE-gated, i.e.
+  // Timelock-gated, i.e. a mandatory 48h wait before Treasury could move
+  // anything at all. Seeding the operations wallet now is a one-time
+  // bootstrap inside the same trusted deploy transaction, not a bypass of
+  // governance -- every later change to this list still goes through the
+  // Timelock.
   const TreasuryFactory = new ethers.ContractFactory(BearthTreasuryArtifact.abi, BearthTreasuryArtifact.bytecode, signer);
-  const treasuryContract = await TreasuryFactory.deploy(timelockAddress, operationsWallet, maxPerTxWei, dailyLimitWei);
+  const treasuryContract = await TreasuryFactory.deploy(timelockAddress, operationsWallet, maxPerTxWei, dailyLimitWei, [operationsWallet]);
   await treasuryContract.waitForDeployment();
   const treasuryAddress = await treasuryContract.getAddress();
-  logger.info(`[contract-deploy] BearthTreasury deployed: ${treasuryAddress} (admin=Timelock, withdrawer=${operationsWallet}, maxPerTx=${ethers.formatEther(maxPerTxWei)} ETH, dailyLimit=${ethers.formatEther(dailyLimitWei)} ETH)`);
+  logger.info(`[contract-deploy] BearthTreasury deployed: ${treasuryAddress} (admin=Timelock, withdrawer=${operationsWallet}, maxPerTx=${ethers.formatEther(maxPerTxWei)} ETH, dailyLimit=${ethers.formatEther(dailyLimitWei)} ETH, initial approved destination=${operationsWallet})`);
+
+  // Batch ETH airdrop utility, ported from the old contract. Owner is the
+  // Timelock (not a hot wallet) since the only owner-gated function,
+  // rescue(), can pull the contract's full ETH balance -- the same
+  // 48h-delay governance model already used for Treasury/Validator.
+  const AirdropFactory = new ethers.ContractFactory(BearthAirdropArtifact.abi, BearthAirdropArtifact.bytecode, signer);
+  const airdropContract = await AirdropFactory.deploy(timelockAddress);
+  await airdropContract.waitForDeployment();
+  const airdropAddress = await airdropContract.getAddress();
+  logger.info(`[contract-deploy] BearthAirdrop deployed: ${airdropAddress} (owner=Timelock)`);
 
   const ValidatorFactory = new ethers.ContractFactory(ValidatorArtifact.abi, ValidatorArtifact.bytecode, signer);
   const validator = await ValidatorFactory.deploy(signer.address);
@@ -326,11 +345,11 @@ async function deployCollectionContractInner(params: {
        contract_address = $1, contract_network = $2, contract_validator_address = $3,
        contract_deploy_tx_hash = $4, contract_deployed_at = now(), contract_deployed_by = $5,
        contract_reveal_coordinator_address = $7, contract_vrf_subscription_id = $8,
-       contract_treasury_address = $9, contract_timelock_address = $10
+       contract_treasury_address = $9, contract_timelock_address = $10, contract_airdrop_address = $11
      WHERE id = $6`,
     [proxyAddress, network, validatorAddress, deployTx?.hash ?? null, deployedBy, collectionId,
      coordinatorAddress, vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null,
-     treasuryAddress, timelockAddress],
+     treasuryAddress, timelockAddress, airdropAddress],
   );
 
   invalidateCollectionContractCache(collectionId);
@@ -347,5 +366,6 @@ async function deployCollectionContractInner(params: {
     vrfSubscriptionId: vrfSubscriptionId > 0n ? vrfSubscriptionId.toString() : null,
     treasuryAddress,
     timelockAddress,
+    airdropAddress,
   };
 }

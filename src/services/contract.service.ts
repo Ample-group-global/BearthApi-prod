@@ -650,6 +650,43 @@ export async function contractReserveMint(
   return callContract("reserveMint", [to, qty, waveNum], {}, collectionId);
 }
 
+const BEARTH_AIRDROP_ABI = [
+  "function airdropEqual(address[] recipients, uint256 amountEach) payable",
+  "function airdrop(address[] recipients, uint256[] amounts) payable",
+];
+
+export async function contractAirdropEth(
+  collectionId: string,
+  recipients: string[],
+  amountEachWei: bigint,
+): Promise<ethers.TransactionReceipt> {
+  const { rows } = await pool.query(
+    "SELECT contract_airdrop_address FROM nft_collections WHERE id = $1",
+    [collectionId],
+  );
+  const airdropAddress = rows[0]?.contract_airdrop_address as string | null | undefined;
+  if (!airdropAddress) throw new HttpError(400, "This collection does not have an Airdrop contract deployed yet.");
+
+  const privateKey = process.env.CONTRACT_PRIVATE_KEY ?? process.env.FIXED_PRIVATE_KEY;
+  if (!privateKey) throw new Error("CONTRACT_PRIVATE_KEY (or FIXED_PRIVATE_KEY) env var is required");
+  const signer = new ethers.Wallet(privateKey, getProvider());
+  const airdrop = new ethers.Contract(airdropAddress, BEARTH_AIRDROP_ABI, signer);
+
+  const totalValue = amountEachWei * BigInt(recipients.length);
+  try {
+    const tx = await (airdrop.airdropEqual as (r: string[], a: bigint, o: object) => Promise<ethers.TransactionResponse>)(
+      recipients, amountEachWei, { value: totalValue },
+    );
+    const receipt = await tx.wait(1);
+    if (!receipt) throw new Error("No receipt for airdropEqual tx");
+    return receipt;
+  } catch (err) {
+    const readable = decodeContractError(err);
+    if (readable) throw new HttpError(400, readable);
+    throw err;
+  }
+}
+
 export async function contractSetSBT(
   enabled: boolean,
   collectionId: string
