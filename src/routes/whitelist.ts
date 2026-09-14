@@ -110,33 +110,6 @@ router.post("/entry", async (req: Request, res: Response, next: NextFunction) =>
   } catch (e) { next(e); }
 });
 
-router.post("/add", async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    requirePermission(req, "contract_ops.manage");
-    const collectionId = requireCollectionId(req, res);
-    if (!collectionId) return;
-    const { addresses } = (req.body ?? {}) as { addresses?: string[] };
-    if (!Array.isArray(addresses) || !addresses.length) {
-      res.status(422).json({ error: "addresses (non-empty array) required" });
-      return;
-    }
-    const invalid = addresses.filter(a => !ETH_ADDRESS_RE.test(a));
-    if (invalid.length) {
-      res.status(422).json({ error: `${invalid.length} invalid address(es)` });
-      return;
-    }
-    const lowered = addresses.map(a => a.toLowerCase());
-    await pool.query(
-      `INSERT INTO nft_collection_whitelist (collection_id, wallet_address, source)
-       SELECT $1, unnest($2::text[]), 'admin_manual'
-       ON CONFLICT (collection_id, wallet_address) DO NOTHING`,
-      [collectionId, lowered]
-    );
-    await refreshComputedRootUnlessOverridden(collectionId);
-    res.json({ ok: true, count: lowered.length });
-  } catch (e) { next(e); }
-});
-
 router.delete("/merkle-root", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
@@ -167,6 +140,11 @@ router.delete("/:address", async (req: Request, res: Response, next: NextFunctio
   } catch (e) { next(e); }
 });
 
+// Intentionally not wired to any UI button -- pasting an arbitrary root here
+// with no validation against the real address list can silently desync the
+// on-chain allowlist from nft_collection_whitelist forever (every other
+// mutation skips recomputing while manual_override is true). Kept only as a
+// documented emergency-recovery escape hatch reachable via direct API call.
 router.put("/merkle-root", async (req: Request, res: Response, next: NextFunction) => {
   try {
     requirePermission(req, "contract_ops.manage");
