@@ -42,7 +42,7 @@ export async function resolveCollectionContractAddress(collectionId: string): Pr
   return addr;
 }
 
-async function resolveCollectionIdFromContractAddress(contractAddress: string): Promise<string | null> {
+export async function resolveCollectionIdFromContractAddress(contractAddress: string): Promise<string | null> {
   const { rows } = await pool.query(
     "SELECT id FROM nft_collections WHERE LOWER(contract_address) = LOWER($1)",
     [contractAddress],

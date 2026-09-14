@@ -3,6 +3,7 @@ import rateLimit from "express-rate-limit";
 import pool from "../pool";
 import { buildMerkleTree, getProof } from "../merkle";
 import { reconcileWhitelistRoot, pushEffectiveRootOnChain } from "../services/customer-whitelist.service";
+import { resolveCollectionIdFromContractAddress } from "../services/contract.service";
 import { requirePermission } from "../adminAuth";
 import { HttpError } from "../errors";
 
@@ -18,6 +19,23 @@ function requireCollectionId(req: Request, res: Response): string | null {
   const v = (req.query.collection_id ?? req.body?.collectionId) as string | undefined;
   if (v && UUID_RE.test(v)) return v;
   res.status(400).json({ error: "collection_id is required" });
+  return null;
+}
+
+// Customer-facing callers (Bearth-FE) don't know a collection's internal UUID --
+// they only know the contract address they're minting against. This resolves
+// that case instead of requiring every caller to already have the UUID.
+async function requireCollectionIdOrContractAddress(req: Request, res: Response): Promise<string | null> {
+  const v = (req.query.collection_id ?? req.body?.collectionId) as string | undefined;
+  if (v && UUID_RE.test(v)) return v;
+  const addr = (req.query.contract_address ?? req.body?.contractAddress) as string | undefined;
+  if (addr && ETH_ADDRESS_RE.test(addr)) {
+    const resolved = await resolveCollectionIdFromContractAddress(addr);
+    if (resolved) return resolved;
+    res.status(404).json({ error: "No collection found for that contract address" });
+    return null;
+  }
+  res.status(400).json({ error: "collection_id or contract_address is required" });
   return null;
 }
 
@@ -257,7 +275,7 @@ router.post("/push-chain", async (req: Request, res: Response, next: NextFunctio
 
 router.post("/test", testLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const collectionId = requireCollectionId(req, res);
+    const collectionId = await requireCollectionIdOrContractAddress(req, res);
     if (!collectionId) return;
     const { address } = (req.body ?? {}) as { address?: string };
     if (!address || !ETH_ADDRESS_RE.test(address)) {

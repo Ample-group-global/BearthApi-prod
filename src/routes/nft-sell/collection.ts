@@ -13,6 +13,7 @@ import {
   contractBlockAccount,
   contractSetPurchaseLimitConfig,
   contractSetPhase,
+  resolveCollectionIdFromContractAddress,
 } from "../../services/contract.service";
 import { scheduleTreasuryWalletChange, getLatestTimelockOp, executeTimelockOp } from "../../services/timelock.service";
 
@@ -247,19 +248,27 @@ router.get("/tokens", async (req, res, next) => {
     if (!owner) return res.status(400).json({ error: "owner query param required" });
 
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "200"), 10) || 200, 1), 500);
+    let collectionId = req.query.collectionId ? String(req.query.collectionId) : null;
+    if (!collectionId && req.query.contract_address) {
+      collectionId = await resolveCollectionIdFromContractAddress(String(req.query.contract_address));
+      if (!collectionId) return res.status(404).json({ error: "No collection found for that contract address" });
+    }
 
     const { rows } = await pool.query(
       `SELECT token_id, owner_address, on_chain_wave_num, rarity_tier, traits,
               is_revealed, image_ipfs_hash, blind_box_uri, minted_at
          FROM nft_records
         WHERE owner_address = $1 AND token_id IS NOT NULL
+          AND ($3::uuid IS NULL OR collection_id = $3)
         ORDER BY token_id ASC
         LIMIT $2`,
-      [owner, limit],
+      [owner, limit, collectionId],
     );
     const { rows: countRows } = await pool.query(
-      `SELECT COUNT(*) AS total FROM nft_records WHERE owner_address = $1 AND token_id IS NOT NULL`,
-      [owner],
+      `SELECT COUNT(*) AS total FROM nft_records
+        WHERE owner_address = $1 AND token_id IS NOT NULL
+          AND ($2::uuid IS NULL OR collection_id = $2)`,
+      [owner, collectionId],
     );
 
     const distinctBlindBoxUris = [
