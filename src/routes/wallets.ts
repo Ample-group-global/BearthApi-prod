@@ -5,6 +5,7 @@ import { requirePermission } from "../adminAuth";
 import { HttpError } from "../errors";
 import { contractBlockAccount } from "../services/contract.service";
 import { autoRegisterAndSync } from "../services/customer-whitelist.service";
+import { resolveCollectionIdFromContractAddress } from "../services/contract.service";
 import { keepAlive } from "../utils/taskProgress";
 
 const router = Router();
@@ -18,7 +19,9 @@ const writeLimit = rateLimit({ windowMs: 60_000, limit: 10, standardHeaders: "dr
 
 router.post("/connect", connectLimit, async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { address } = (req.body ?? {}) as { address?: string };
+    const { address, contractAddress, privyUserId } = (req.body ?? {}) as {
+      address?: string; contractAddress?: string; privyUserId?: string;
+    };
     if (!address || !ETH_ADDRESS_RE.test(address)) {
       res.status(422).json({ error: "Invalid Ethereum address" });
       return;
@@ -30,7 +33,10 @@ router.post("/connect", connectLimit, async (req: Request, res: Response, next: 
       return;
     }
     if (row.registered || !row.is_whitelisted) {
-      keepAlive(autoRegisterAndSync(address, "wallet_connect").catch(() => null));
+      const collectionId = contractAddress
+        ? await resolveCollectionIdFromContractAddress(contractAddress).catch(() => null)
+        : null;
+      keepAlive(autoRegisterAndSync(address, "wallet_connect", collectionId ?? undefined, privyUserId).catch(() => null));
     }
     res.json({
       address: row.address as string,

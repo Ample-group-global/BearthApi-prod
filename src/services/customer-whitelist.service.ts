@@ -131,12 +131,25 @@ export async function autoRegisterAndSync(
   address: string,
   source: string,
   collectionId?: string,
+  privyUserId?: string,
 ): Promise<void> {
   await pool.query(
-    "SELECT customer_wallet_auto_register($1, $2)",
-    [address.toLowerCase(), source]
+    "SELECT customer_wallet_auto_register($1, $2, $3)",
+    [address.toLowerCase(), source, privyUserId ?? null]
   );
-  if (collectionId) triggerChainSync(collectionId);
+  if (collectionId) {
+    // Auto-whitelist for the collection Bearth-FE actually represents --
+    // "we don't know which customer is coming when" means every wallet that
+    // connects here is eligible, not just a pre-vetted list. ON CONFLICT
+    // guards a wallet connecting twice (or already whitelisted manually).
+    await pool.query(
+      `INSERT INTO nft_collection_whitelist (collection_id, wallet_address, source)
+       VALUES ($1, $2, $3)
+       ON CONFLICT DO NOTHING`,
+      [collectionId, address.toLowerCase(), source],
+    );
+    triggerChainSync(collectionId);
+  }
 }
 
 export async function requireRegisteredWallets(wallets: string[]): Promise<void> {
