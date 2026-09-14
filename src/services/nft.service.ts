@@ -75,7 +75,12 @@ export async function listNft(params: {
      FROM v_nft_records nr
      LEFT JOIN nft_waves w ON nr.wave_id = w.id
      WHERE ($1::TEXT IS NULL OR nr.serial_number ILIKE '%' || $1 || '%' OR nr.token_id::TEXT = $1)
-       AND ($2::VARCHAR IS NULL OR (CASE WHEN $2 = 'treasury_wallet' THEN nr.delivery_status_code IN ('treasury_wallet','transferred') WHEN $2 = 'unsold' THEN nr.delivery_status_code IN ('reserved','treasury_pending') ELSE nr.delivery_status_code = $2 END))
+       AND ($2::VARCHAR IS NULL OR (CASE
+              WHEN $2 = 'treasury_wallet' THEN nr.delivery_status_code IN ('treasury_wallet','transferred')
+              WHEN $2 = 'unsold' THEN nr.delivery_status_code IN ('reserved','treasury_pending')
+              WHEN $2 = 'customer_held' THEN nr.owner_address IS NOT NULL AND nr.delivery_status_code NOT IN ('treasury_wallet','transferred')
+              ELSE nr.delivery_status_code = $2
+            END))
        AND ($3::VARCHAR IS NULL OR nr.stage_code = $3)
        AND ($4::BOOLEAN IS NULL OR nr.is_revealed = $4)
        AND ($5::UUID IS NULL OR nr.wave_id = $5::UUID)
