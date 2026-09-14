@@ -65,8 +65,24 @@ router.get("/", async (req: Request, res: Response, next: NextFunction) => {
       "SELECT merkle_root, manual_override, last_updated FROM whitelist_state WHERE collection_id = $1",
       [collectionId]
     );
+    // Best-effort identity lookup for display only -- a whitelisted address
+    // with no matching customer record (e.g. added before the wallet ever
+    // connected) still belongs in the list, just without a name/code.
+    const { rows: customerRows } = await pool.query(
+      `SELECT LOWER(cw.address) AS address, u.user_code, TRIM(u.first_name || ' ' || u.last_name) AS name
+         FROM nft_collection_whitelist wl
+         JOIN customer_wallets cw ON LOWER(cw.address) = LOWER(wl.wallet_address)
+         JOIN users u ON u.id = cw.user_id
+        WHERE wl.collection_id = $1`,
+      [collectionId],
+    );
+    const customers: Record<string, { userCode: string | null; name: string | null }> = {};
+    for (const r of customerRows) {
+      customers[r.address] = { userCode: r.user_code ?? null, name: r.name || null };
+    }
     res.json({
       addresses: rows.map((r: { address: string }) => r.address),
+      customers,
       metadata: stateRows[0] ?? null,
     });
   } catch (e) { next(e); }
