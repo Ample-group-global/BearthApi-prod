@@ -64,6 +64,8 @@ router.get("/", async (req, res, next) => {
            SELECT
              COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), rw.address) AS customer_name,
              rw.address,
+             u.user_code,
+             NULLIF(TRIM(COALESCE(ref.first_name, '') || ' ' || COALESCE(ref.last_name, '')), '') AS referrer_name,
              EXISTS(
                SELECT 1 FROM nft_collection_whitelist wl
                 WHERE wl.collection_id = $1 AND LOWER(wl.wallet_address) = rw.address
@@ -76,9 +78,10 @@ router.get("/", async (req, res, next) => {
            FROM relevant_wallets rw
            LEFT JOIN customer_wallets cw ON LOWER(cw.address) = rw.address
            LEFT JOIN users u ON u.id = cw.user_id
+           LEFT JOIN users ref ON ref.id = u.referrer_id
            LEFT JOIN nft_records nr ON LOWER(nr.owner_address) = rw.address AND nr.collection_id = $1
            LEFT JOIN nft_waves w ON w.collection_id = $1 AND w.wave_number = nr.wave_num
-           GROUP BY rw.address, u.first_name, u.last_name, nr.wave_num, w.name, w.default_price_eth, w.sale_method
+           GROUP BY rw.address, u.first_name, u.last_name, u.user_code, ref.first_name, ref.last_name, nr.wave_num, w.name, w.default_price_eth, w.sale_method
            ORDER BY customer_name, nr.wave_num`,
           [collectionId],
         )
@@ -87,13 +90,15 @@ router.get("/", async (req, res, next) => {
     const [customersRow, wavesRows, walletsRows] = await Promise.all([customersPromise, wavesPromise, walletsPromise]);
 
     interface WaveBreakdown { waveNumber: number; waveName: string; priceEth: number; qty: number; spentEth: number; }
-    const walletMap = new Map<string, { customerName: string; address: string; whitelisted: boolean; perWave: WaveBreakdown[] }>();
+    const walletMap = new Map<string, { customerName: string; address: string; userCode: string | null; referrerName: string | null; whitelisted: boolean; perWave: WaveBreakdown[] }>();
     for (const row of walletsRows.rows) {
       const key = String(row.address).toLowerCase();
       if (!walletMap.has(key)) {
         walletMap.set(key, {
           customerName: (row.customer_name as string) || "(no name)",
           address: row.address as string,
+          userCode: (row.user_code as string) ?? null,
+          referrerName: (row.referrer_name as string) ?? null,
           whitelisted: !!row.whitelisted,
           perWave: [],
         });
