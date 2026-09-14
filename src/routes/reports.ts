@@ -14,11 +14,16 @@ router.get("/", async (req, res, next) => {
     requirePermission(req, "customers.view");
     const collectionId = (req.query.collection_id as string) || null;
 
+    // Holders must exclude the collection's own Treasury contract -- it
+    // legitimately owns every treasury-swept unsold token, but it is not a
+    // customer.
     const customersPromise = pool.query(
-      `SELECT COUNT(DISTINCT cw.user_id)::int AS holders
-         FROM customer_wallets cw
-         JOIN nft_records nr ON LOWER(nr.owner_address) = LOWER(cw.address)
-        WHERE ($1::uuid IS NULL OR nr.collection_id = $1)`,
+      `SELECT COUNT(DISTINCT LOWER(nr.owner_address))::int AS holders
+         FROM nft_records nr
+         JOIN nft_collections nc ON nc.id = nr.collection_id
+        WHERE ($1::uuid IS NULL OR nr.collection_id = $1)
+          AND nr.owner_address IS NOT NULL
+          AND ($1::uuid IS NULL OR LOWER(nr.owner_address) <> LOWER(nc.contract_treasury_address))`,
       [collectionId],
     );
 
@@ -33,25 +38,47 @@ router.get("/", async (req, res, next) => {
     // Per-wallet quick summary: which customer, is that wallet whitelisted
     // for this collection, and a per-wave breakdown of what it actually
     // minted here (quantity + price paid in each wave).
+    //
+    // customer_wallets is a GLOBAL registry across every collection this
+    // ecosystem has ever touched (including years-old manual/test rows) --
+    // starting the query from it and INNER JOINing to users meant this list
+    // silently mixed in wallets that have nothing to do with the selected
+    // collection, while dropping real minters here whose user_id happened
+    // to be orphaned. The correct starting set is "wallets relevant to THIS
+    // collection": whitelisted here, or actually holding a token here (minus
+    // the Treasury contract, which is not a customer) -- name/whitelist
+    // lookups are then best-effort LEFT JOINs, never a reason to drop a row.
     const walletsPromise = collectionId
       ? pool.query(
-          `SELECT
-             TRIM(u.first_name || ' ' || u.last_name) AS customer_name,
-             cw.address,
+          `WITH relevant_wallets AS (
+             SELECT DISTINCT LOWER(wallet_address) AS address
+               FROM nft_collection_whitelist WHERE collection_id = $1
+             UNION
+             SELECT DISTINCT LOWER(nr.owner_address)
+               FROM nft_records nr
+               JOIN nft_collections nc ON nc.id = nr.collection_id
+              WHERE nr.collection_id = $1
+                AND nr.owner_address IS NOT NULL
+                AND LOWER(nr.owner_address) <> LOWER(nc.contract_treasury_address)
+           )
+           SELECT
+             COALESCE(NULLIF(TRIM(u.first_name || ' ' || u.last_name), ''), rw.address) AS customer_name,
+             rw.address,
              EXISTS(
                SELECT 1 FROM nft_collection_whitelist wl
-                WHERE wl.collection_id = $1 AND LOWER(wl.wallet_address) = LOWER(cw.address)
+                WHERE wl.collection_id = $1 AND LOWER(wl.wallet_address) = rw.address
              ) AS whitelisted,
              nr.wave_num,
              w.name AS wave_name,
              w.default_price_eth,
              w.sale_method,
              COUNT(nr.id) FILTER (WHERE nr.id IS NOT NULL)::int AS qty
-           FROM customer_wallets cw
-           JOIN users u ON u.id = cw.user_id
-           LEFT JOIN nft_records nr ON LOWER(nr.owner_address) = LOWER(cw.address) AND nr.collection_id = $1
+           FROM relevant_wallets rw
+           LEFT JOIN customer_wallets cw ON LOWER(cw.address) = rw.address
+           LEFT JOIN users u ON u.id = cw.user_id
+           LEFT JOIN nft_records nr ON LOWER(nr.owner_address) = rw.address AND nr.collection_id = $1
            LEFT JOIN nft_waves w ON w.collection_id = $1 AND w.wave_number = nr.wave_num
-           GROUP BY u.first_name, u.last_name, cw.address, nr.wave_num, w.name, w.default_price_eth, w.sale_method
+           GROUP BY rw.address, u.first_name, u.last_name, nr.wave_num, w.name, w.default_price_eth, w.sale_method
            ORDER BY customer_name, nr.wave_num`,
           [collectionId],
         )
