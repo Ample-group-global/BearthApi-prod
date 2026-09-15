@@ -278,7 +278,7 @@ router.get("/tokens", async (req, res, next) => {
     }
 
     const { rows } = await pool.query(
-      `SELECT token_id, owner_address, on_chain_wave_num, rarity_tier, traits,
+      `SELECT token_id, owner_address, on_chain_wave_num, rarity_tier, rarity_score, rarity_rank, traits,
               is_revealed, image_ipfs_hash, blind_box_uri, minted_at
          FROM nft_records
         WHERE owner_address = $1 AND token_id IS NOT NULL
@@ -320,6 +320,8 @@ router.get("/tokens", async (req, res, next) => {
           owner_address: r.owner_address,
           wave_number: r.on_chain_wave_num,
           rarity_tier: r.is_revealed ? r.rarity_tier : null,
+          rarity_score: r.is_revealed ? r.rarity_score : null,
+          rarity_rank: r.is_revealed ? r.rarity_rank : null,
           traits: r.is_revealed ? r.traits : null,
           is_revealed: r.is_revealed,
           image_ipfs_hash: r.is_revealed ? r.image_ipfs_hash : null,
