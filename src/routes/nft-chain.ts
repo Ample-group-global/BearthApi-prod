@@ -110,11 +110,11 @@ router.get("/metadata/:tokenId", requireAdmin, async (req, res, next) => {
       return;
     }
     const gatewayUrl = uri.startsWith("ipfs://")
-      ? `https://ipfs.io/ipfs/${uri.slice(7)}`
+      ? `https://ipfs.filebase.io/ipfs/${uri.slice(7)}`
       : uri;
     let metadata: unknown = null;
     try {
-      const ipfsRes = await fetch(gatewayUrl, { signal: AbortSignal.timeout(10_000) });
+      const ipfsRes = await fetch(gatewayUrl, { signal: AbortSignal.timeout(20_000) });
       if (ipfsRes.ok) metadata = await ipfsRes.json();
     } catch { }
     res.json({ tokenId, uri, gatewayUrl, metadata });

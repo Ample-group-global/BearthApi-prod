@@ -75,6 +75,24 @@ export async function getContractWithSignerForCollection(collectionId: string): 
   _contractSignedByCollection.set(collectionId, c);
   return c;
 }
+
+const _contractEmergencySignedByCollection = new Map<string, Contract>();
+
+// emergencyTransfer() requires EMERGENCY_ROLE, a role deliberately NOT held
+// by the general Operations signer above (see the 5-wallet role separation --
+// a compromised/automated Operations key should never be able to force-move
+// an NFT). This needs its own dedicated key.
+export async function getContractWithEmergencySignerForCollection(collectionId: string): Promise<Contract> {
+  const cached = _contractEmergencySignedByCollection.get(collectionId);
+  if (cached) return cached;
+  const addr = await resolveCollectionContractAddress(collectionId);
+  const privateKey = process.env.EMERGENCY_PRIVATE_KEY;
+  if (!privateKey) throw new Error("EMERGENCY_PRIVATE_KEY env var is required for emergency transfers");
+  const signer = new ethers.Wallet(privateKey, getProvider());
+  const c = new ethers.Contract(addr, BearthNFT_ABI, signer);
+  _contractEmergencySignedByCollection.set(collectionId, c);
+  return c;
+}
 const CONTRACT_ERROR_MESSAGES: Record<string, string> = {
   WaveSoldOut: "This wave is sold out",
   SupplyExceeded: "Collection is sold out 9,999 max supply reached",
@@ -728,7 +746,23 @@ export async function contractEmergencyTransfer(
   if (!ethers.isAddress(from)) throw new Error("Invalid from address");
   if (!ethers.isAddress(to)) throw new Error("Invalid to address");
   if (!reason?.trim()) throw new Error("reason is required");
-  return callContract("emergencyTransfer", [id, from, to, reason], {}, collectionId);
+  const contract = await getContractWithEmergencySignerForCollection(collectionId);
+  try {
+    // Fixed gasLimit skips ethers' automatic eth_estimateGas round-trip --
+    // a single-token transferFrom + event emission is well-bounded gas, and
+    // this RPC call is specifically the one that stalls under listener load
+    // (see 2026-09-15 session: eth_estimateGas repeatedly rate-limited while
+    // simple reads/writes elsewhere succeeded fine).
+    const tx = await contract.emergencyTransfer(id, from, to, reason, { gasLimit: 300_000n });
+    const receipt = await tx.wait(1);
+    if (!receipt) throw new Error("No receipt for emergencyTransfer tx");
+    await syncReceiptLogs(receipt);
+    return receipt;
+  } catch (err) {
+    const readable = decodeContractError(err);
+    if (readable) throw new HttpError(400, readable);
+    throw err;
+  }
 }
 
 export async function contractBlockAccount(
