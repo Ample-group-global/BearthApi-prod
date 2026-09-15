@@ -270,7 +270,9 @@ router.get("/tokens", async (req, res, next) => {
     const owner = String(req.query.owner ?? "").toLowerCase();
     if (!owner) return res.status(400).json({ error: "owner query param required" });
 
-    const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "200"), 10) || 200, 1), 500);
+    // Owner-scoped, so this is inherently bounded by real token supply (max
+    // 9999 per collection) -- no artificial page-size cap needed or wanted
+    // here, unlike admin list endpoints that scan across all owners.
     let collectionId = req.query.collectionId ? String(req.query.collectionId) : null;
     if (!collectionId && req.query.contract_address) {
       collectionId = await resolveCollectionIdFromContractAddress(String(req.query.contract_address));
@@ -282,10 +284,9 @@ router.get("/tokens", async (req, res, next) => {
               is_revealed, image_ipfs_hash, blind_box_uri, minted_at
          FROM nft_records
         WHERE owner_address = $1 AND token_id IS NOT NULL
-          AND ($3::uuid IS NULL OR collection_id = $3)
-        ORDER BY token_id ASC
-        LIMIT $2`,
-      [owner, limit, collectionId],
+          AND ($2::uuid IS NULL OR collection_id = $2)
+        ORDER BY token_id ASC`,
+      [owner, collectionId],
     );
     const { rows: countRows } = await pool.query(
       `SELECT COUNT(*) AS total FROM nft_records
