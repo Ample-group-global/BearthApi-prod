@@ -112,6 +112,20 @@ router.put("/phase", async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.put("/public-site", async (req, res, next) => {
+  try {
+    requirePermission(req, "contract_ops.manage");
+    const collectionId = requireCollectionId(req, res);
+    if (!collectionId) return;
+    const { enabled } = req.body as { enabled?: boolean };
+    if (typeof enabled !== "boolean") return res.status(422).json({ error: "enabled (boolean) required" });
+    const { rows } = enabled
+      ? await pool.query("SELECT * FROM nft_collections_set_public_site($1)", [collectionId])
+      : await pool.query("SELECT * FROM nft_collections_clear_public_site($1)", [collectionId]);
+    res.json({ ok: true, collection: rows[0] });
+  } catch (err) { next(err); }
+});
+
 router.post("/admin-mint", async (req, res, next) => {
   try {
     requirePermission(req, "contract_ops.manage");
